@@ -12,5 +12,11 @@
   },
   "devDependencies": {
     "wrangler": "4.125.0"
+  },
+  "bin": {
+    "spor": "bin/spor.mjs"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

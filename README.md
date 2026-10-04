@@ -20,12 +20,36 @@ language.
 - **Agent-led setup.** [AGENTS.md](AGENTS.md) is written so that an agent can
   stand up an instance end to end.
 
+## CLI
+
+```bash
+npm link                                  # puts `spor` on your PATH
+spor report --days 7                      # stats per host in the terminal
+spor report --json | jq '.hosts[0]'       # the same model as /api/report
+spor ask "who reads my blog, and from where?"
+spor hosts                                # configured hosts and what they are
+spor check                                # config, secrets, connectivity
+```
+
+The CLI reads either a running instance, using `SPOR_URL` and `SPOR_PASSWORD`,
+or Analytics Engine directly, using `CF_ACCOUNT_ID` and `CF_ANALYTICS_TOKEN`
+from the environment or `./.dev.vars`. Instance mode works from anywhere: your
+laptop, a box on your tailnet, or an ssh session.
+
+`spor ask` pipes the report and your question to any command that reads stdin.
+It uses the first of these that is set: `--llm`, then `SPOR_LLM`, then
+`vars.SPOR.llm`, otherwise `claude -p`. Other commands that work include
+`codex exec -` and `ollama run llama3`. Each breakdown in the report is trimmed
+to its top 20 entries, and stored values are passed as data, never as
+instructions.
+
 ## Parts
 
 | Part | What it does |
 |---|---|
 | `src/worker.js` | The dashboard at `/` and the JSON API at `/api/report?days=&host=`, behind Basic auth |
 | `src/report.js` | Pure logic: config, SQL, classification (bots, assets, probes, referers) and rendering |
+| `bin/spor.mjs` | The CLI: `report`, `ask`, `hosts`, `check`. Node built-ins only |
 | `tap/worker.js` | A pass-through route Worker for hosts that aren't Workers |
 | `snippets/` | How a Workers site writes its own data point, including hash-routed single-page apps |
 
