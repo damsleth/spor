@@ -153,10 +153,13 @@ function top(map) {
   return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, TOP)
 }
 
+// A top-N table; every row carries an inline bar proportional to the largest row
 function table(title, map) {
   if (!map.size) return ""
-  const rows = top(map).map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td class="n">${v}</td></tr>`).join("")
-  return `<table><caption>${escapeHtml(title)}</caption>${rows}</table>`
+  const rows = top(map)
+  const max = Math.max(1, rows[0][1])
+  const body = rows.map(([k, v]) => `<tr><td><div class="cell"><i style="width:${Math.max(1, Math.round((v / max) * 100))}%"></i><span>${escapeHtml(k)}</span></div></td><td class="n">${v}</td></tr>`).join("")
+  return `<table><caption>${escapeHtml(title)}</caption>${body}</table>`
 }
 
 function windowDays(days, today) {
@@ -164,54 +167,136 @@ function windowDays(days, today) {
   return Array.from({ length: days }, (_, i) => new Date(end - (days - 1 - i) * 86400000).toISOString().slice(0, 10))
 }
 
-function bars(daily, window) {
-  const days = window.map((day) => [day, daily.get(day) || 0])
+const WIDTH = 200
+// Zero-filled per-day bars as inline SVG; one <rect> (with a hover <title>) per day in the window
+function bars(daily, window, label, tall = false) {
   if (!daily.size) return ""
-  const max = Math.max(1, ...days.map(([, v]) => v))
-  const cols = days.map(([day, v]) => `<div class="bar" style="height:${Math.max(2, Math.round((v / max) * 100))}%" title="${escapeHtml(day)}: ${v}"></div>`).join("")
-  return `<div class="bars" aria-label="requests per day">${cols}</div>`
+  const series = window.map((day) => [day, daily.get(day) || 0])
+  const max = Math.max(1, ...series.map(([, v]) => v))
+  const height = 40
+  const step = WIDTH / series.length
+  const bw = Math.min(12, Math.max(1, +(step * 0.6).toFixed(1)))
+  const rects = series.map(([day, v], i) => {
+    const h = v ? Math.max(2, Math.round((v / max) * (height - 2))) : 1
+    return `<rect x="${+(i * step + (step - bw) / 2).toFixed(1)}" y="${height - h}" width="${bw}" height="${h}"${v ? "" : ` class="z"`}><title>${escapeHtml(day)}: ${v}</title></rect>`
+  }).join("")
+  const first = window[0].slice(5)
+  const last = window[window.length - 1].slice(5)
+  return `<svg class="spark${tall ? " tall" : ""}" viewBox="0 0 ${WIDTH} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(label)}: ${max} peak per day, ${escapeHtml(window[0])} to ${escapeHtml(window[window.length - 1])}">${rects}</svg>
+<div class="axis"><span>${escapeHtml(first)}</span><span>peak ${max}/day</span><span>${escapeHtml(last)}</span></div>`
 }
 
+// Status-code mix: one stacked segment per status class (2xx/3xx/4xx/5xx/other), with a text legend
+function statusMix(status) {
+  const total = [...status.values()].reduce((s, v) => s + v, 0)
+  if (!total) return ""
+  const classes = new Map()
+  for (const [k, v] of status) {
+    const c = /^[2-5]\d\d$/.test(k) ? `c${k[0]}` : "co"
+    classes.set(c, (classes.get(c) || 0) + v)
+  }
+  const segs = [...classes].sort().map(([c, v]) => `<i class="${c}" style="width:${(v / total * 100).toFixed(1)}%"></i>`).join("")
+  const legend = top(status).map(([k, v]) => `<span class="${/^[2-5]\d\d$/.test(k) ? `c${k[0]}` : "co"}"><b>${escapeHtml(k)}</b> ${v}</span>`).join("")
+  const summary = [...classes].sort().map(([c, v]) => `${c === "co" ? "other" : `${c[1]}xx`} ${Math.round(v / total * 100)}%`).join(", ")
+  return `<div class="mix" role="img" aria-label="status mix: ${escapeHtml(summary)}">${segs}</div><p class="legend">${legend}</p>`
+}
+
+const fmt = (n) => n.toLocaleString("en-US")
+
 function hostSection(h, window, services) {
-  const status = top(h.status).map(([k, v]) => `${escapeHtml(k)}&nbsp;${v}`).join(" · ")
   const share = h.ok2xx ? Math.round((h.bots / h.ok2xx) * 100) : 0
-  return `<section>
-<h2>${escapeHtml(h.host)}${services[h.host] ? ` <span class="desc">${escapeHtml(services[h.host])}</span>` : ""}</h2>
-<p class="summary"><b>${h.requests}</b> requests · <b>${h.pageviews}</b> human page views · ${share}% of 2xx from bots</p>
-<p class="status">status: ${status}</p>
-${bars(h.daily, window)}
+  const desc = services[h.host]
+  return `<section class="card${h.pageviews ? "" : " quiet"}">
+<header><h2>${escapeHtml(h.host)}${desc ? ` <span class="desc">${escapeHtml(desc)}</span>` : ""}</h2></header>
+<p class="summary"><b>${fmt(h.requests)}</b> requests · <b>${fmt(h.pageviews)}</b> human page views · ${share}% of 2xx from bots</p>
+${bars(h.daily, window, `${h.host} requests per day`)}
+${statusMix(h.status)}
 <div class="grid">
 ${table("pages", h.pages)}${table("referers", h.referers)}${table("countries", h.countries)}${table("browsers", h.browsers)}${table("404s and probes", h.probes)}${table("proxy targets", h.targets)}${table("proxy callers (Origin)", h.origins)}
 </div>
 </section>`
 }
 
+const CSS = `:root{color-scheme:light dark;--bg:#f6f7f9;--card:#fff;--fg:#14171f;--muted:#5d6572;--line:#e6e8ec;--soft:#f0f2f5;--accent:#2f62d9;--accent-soft:rgba(47,98,217,.12);--c2:#2a8f5b;--c3:#2f62d9;--c4:#c27a10;--c5:#cc3b3b;--co:#8a919d}
+@media (prefers-color-scheme:dark){:root{--bg:#0d0f14;--card:#161a22;--fg:#e9ecf2;--muted:#9aa3b2;--line:#262b36;--soft:#1d222c;--accent:#7aa2ff;--accent-soft:rgba(122,162,255,.16);--c2:#4fc08a;--c3:#7aa2ff;--c4:#e0a43c;--c5:#f0716f;--co:#8a919d}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:1120px;padding:24px 16px 48px;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+h1{font-size:22px;font-weight:650;letter-spacing:-.01em;margin:0}
+.muted{color:var(--muted)}.top p{margin:4px 0 0;font-size:13px}
+.bar{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;margin:16px 0 20px}
+.seg{display:inline-flex;background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:2px}
+.seg a,.seg b{padding:4px 12px;border-radius:6px;font-weight:500;color:var(--muted);text-decoration:none}
+.seg b{background:var(--card);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chips a{padding:2px 10px;border:1px solid var(--line);border-radius:999px;font-size:13px;color:var(--muted);background:var(--card)}
+.chips a:hover{color:var(--fg);text-decoration:none;border-color:var(--muted)}
+.chips b{padding:2px 10px;border-radius:999px;font-size:13px;background:var(--accent);color:var(--bg)}
+.note{border:1px solid var(--c4);border-left-width:4px;background:var(--card);border-radius:8px;padding:8px 12px;margin:0 0 16px;font-size:13px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
+.tile,.card{background:var(--card);border:1px solid var(--line);border-radius:12px}
+.tile{padding:14px 16px;min-width:0}
+.tile .l{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.tile .v{font-size:28px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.2}
+.tile .s{font-size:12px;color:var(--muted)}
+.card{padding:16px;margin-bottom:16px}
+.cap{margin:0 0 8px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.card.quiet{opacity:.72}
+h2{font-size:16px;font-weight:650;margin:0;overflow-wrap:anywhere}h2 .desc{display:block;font-weight:400;color:var(--muted);font-size:13px}
+.summary{margin:8px 0 12px;color:var(--muted)}.summary b{color:var(--fg);font-variant-numeric:tabular-nums}
+.spark{display:block;width:100%;height:56px;fill:var(--accent)}.spark.tall{height:40px}.spark rect{rx:1}.spark rect.z{fill:var(--line)}.spark rect:hover{opacity:.7}
+.axis{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin:2px 0 12px}
+.mix{display:flex;gap:2px;height:8px;border-radius:4px;overflow:hidden;background:var(--soft)}
+.mix i{display:block;height:100%}
+.c2{background:var(--c2)}.c3{background:var(--c3)}.c4{background:var(--c4)}.c5{background:var(--c5)}.co{background:var(--co)}
+.legend{display:flex;flex-wrap:wrap;gap:2px 12px;margin:6px 0 16px;font-size:12px;color:var(--muted)}
+.legend span{background:none!important;padding-left:12px;position:relative;font-variant-numeric:tabular-nums}
+.legend span::before{content:"";position:absolute;left:0;top:6px;width:8px;height:8px;border-radius:2px;background:currentColor}
+.legend .c2::before{background:var(--c2)}.legend .c3::before{background:var(--c3)}.legend .c4::before{background:var(--c4)}.legend .c5::before{background:var(--c5)}.legend .co::before{background:var(--co)}
+.legend b{color:var(--fg);font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:16px 24px}
+table{align-self:start;border-collapse:collapse;width:100%;table-layout:fixed}
+caption{text-align:left;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding:0 0 4px}
+td{padding:1px 0;vertical-align:middle}
+td.n{width:56px;text-align:right;font-variant-numeric:tabular-nums;padding-left:8px}
+.cell{position:relative;padding:2px 6px;border-radius:4px;overflow:hidden}
+.cell i{position:absolute;left:0;top:0;bottom:0;background:var(--accent-soft);border-radius:4px}
+.cell span{position:relative;display:block;overflow-wrap:anywhere}
+.empty{text-align:center;padding:48px 0}
+@media (max-width:520px){body{padding:16px 12px 32px}.tile .v{font-size:24px}.card{padding:12px}}`
+
 export function render(model, { days, host, generated, config, today = new Date().toISOString().slice(0, 10) }) {
   const services = config.services
   const window = windowDays(days, today)
   const link = (d, hst) => `?days=${d}${hst ? `&amp;host=${encodeURIComponent(hst)}` : ""}`
-  const dayLinks = [1, 7, 31].map((d) => d === days ? `<b>${d}d</b>` : `<a href="${link(d, host)}">${d}d</a>`).join(" ")
-  const hostLinks = [`<a href="${link(days, null)}">all</a>`, ...model.map((h) => `<a href="${link(days, h.host)}"${services[h.host] ? ` title="${escapeHtml(services[h.host])}"` : ""}>${escapeHtml(h.host)}</a>`)].join(" ")
+  const dayLinks = [1, 7, 31].map((d) => d === days ? `<b aria-current="true">${d}d</b>` : `<a href="${link(d, host)}">${d}d</a>`).join("")
+  const hostLinks = [host ? `<a href="${link(days, null)}">all</a>` : `<b aria-current="true">all</b>`, ...model.map((h) => `<a href="${link(days, h.host)}"${services[h.host] ? ` title="${escapeHtml(services[h.host])}"` : ""}>${escapeHtml(h.host)}</a>`)].join("")
   const total = model.reduce((s, h) => s + h.requests, 0)
+  const views = model.reduce((s, h) => s + h.pageviews, 0)
+  const ok = model.reduce((s, h) => s + h.ok2xx, 0)
+  const bots = model.reduce((s, h) => s + h.bots, 0)
+  const share = ok ? Math.round((bots / ok) * 100) : 0
+  const sum = new Map()
+  for (const h of model) for (const [d, n] of h.daily) sum.set(d, (sum.get(d) || 0) + n)
+  const tiles = `<div class="tiles">
+<div class="tile"><div class="l">Requests</div><div class="v">${fmt(total)}</div><div class="s">last ${days} day${days === 1 ? "" : "s"}</div></div>
+<div class="tile"><div class="l">Human page views</div><div class="v">${fmt(views)}</div><div class="s">bots and assets excluded</div></div>
+<div class="tile"><div class="l">Bot share</div><div class="v">${share}%</div><div class="s">${share}% of 2xx from bots</div></div>
+<div class="tile"><div class="l">Hosts</div><div class="v">${model.length}</div><div class="s">${model.filter((h) => h.pageviews).length} with human traffic</div></div>
+</div>
+${model.length ? `<div class="card"><p class="cap">Requests per day, all hosts</p>${bars(sum, window, "total requests per day", true)}</div>` : ""}`
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex"><title>${escapeHtml(config.title)}</title>
 <style>
-:root{--bg:#fff;--fg:#1a1a1a;--muted:#666;--line:#e3e3e3;--bar:#3b6fd8}
-@media (prefers-color-scheme:dark){:root{--bg:#121212;--fg:#e8e8e8;--muted:#999;--line:#2c2c2c;--bar:#6c9cff}}
-body{margin:0 auto;max-width:1100px;padding:16px;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}
-a{color:var(--bar)}h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:24px 0 4px}h2 .desc{font-weight:400;color:var(--muted);font-size:14px;margin-left:6px}
-.muted,.status{color:var(--muted)}section{border-top:1px solid var(--line);padding-top:4px}
-.bars{display:flex;align-items:flex-end;gap:2px;height:48px;margin:8px 0}.bar{flex:1;background:var(--bar);min-width:3px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
-table{border-collapse:collapse;width:100%;table-layout:fixed}caption{text-align:left;font-weight:600;padding:4px 0}
-td{border-bottom:1px solid var(--line);padding:2px 4px;overflow-wrap:anywhere}td.n{width:60px;text-align:right;font-variant-numeric:tabular-nums}
+${CSS}
 </style></head><body>
-<h1>${escapeHtml(config.title)}</h1>
-<p class="muted">${total} requests · last ${days} day${days === 1 ? "" : "s"}${host ? ` · ${escapeHtml(host)}` : ""} · generated ${escapeHtml(generated)} · cached up to 5 min</p>
-<p>${dayLinks} · ${hostLinks}</p>
-${model.partial ? `<p class="muted">Breakdowns are partial: the detail query hit its ${OK_LIMIT}-group cap, so human counts are a lower bound.</p>` : ""}
-${model.length ? model.map((h) => hostSection(h, window, services)).join("\n") : "<p>No data in this window.</p>"}
+<div class="top"><h1>${escapeHtml(config.title)}</h1>
+<p class="muted">${total} requests · last ${days} day${days === 1 ? "" : "s"}${host ? ` · ${escapeHtml(host)}` : ""} · generated ${escapeHtml(generated)} · cached up to 5 min</p></div>
+<nav class="bar" aria-label="filters"><div class="seg" aria-label="days">${dayLinks}</div><div class="chips" aria-label="hosts">${hostLinks}</div></nav>
+${model.partial ? `<p class="note">Breakdowns are partial: the detail query hit its ${OK_LIMIT}-group cap, so human counts are a lower bound.</p>` : ""}
+${model.length ? `${tiles}
+${model.map((h) => hostSection(h, window, services)).join("\n")}` : `<p class="empty muted">No data in this window.</p>`}
 </body></html>`
 }
 

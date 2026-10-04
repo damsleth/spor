@@ -143,7 +143,8 @@ test("the daily series has one bar per day in the window, zero-filled", () => {
     ]
   }, config)
   const html = render(model, { days: 3, host: null, config, generated: "x", today: "2026-10-03" })
-  const bars = [...html.matchAll(/class="bar"[^>]*title="([^"]+)"/g)].map((m) => m[1])
+  const card = html.slice(html.indexOf('<section'))
+  const bars = [...card.matchAll(/<rect [^>]*><title>([^<]+)<\/title>/g)].map((m) => m[1])
   assert.deepEqual(bars, ["2026-10-01: 3", "2026-10-02: 0", "2026-10-03: 2"])
 })
 
@@ -186,4 +187,21 @@ test("the title comes from config and is escaped", () => {
   const html = render([], { days: 1, host: null, config: loadConfig({ title: "<home> stats" }), generated: "x" })
   assert.match(html, /<title>&lt;home&gt; stats<\/title>/)
   assert.doesNotMatch(html, /<home>/)
+})
+
+test("hostile host, description and referer cannot inject markup into the SVG or tables", () => {
+  const evil = `"><script>alert(1)</script><svg onload=alert(2)>`
+  const cfg = loadConfig({ services: { [evil]: evil }, title: evil })
+  const model = build({
+    totals: [{ host: evil, status: evil, n: 5 }, { host: evil, status: "200", n: 5 }],
+    daily: [{ day: "2026-10-03 00:00:00", host: evil, n: 5 }],
+    ok: [{ host: evil, path: evil, referer: evil, ua: chrome, country: evil, method: "VIEW", n: 1 }]
+  }, cfg)
+  const html = render(model, { days: 3, host: evil, config: cfg, generated: evil, today: "2026-10-03" })
+  assert.doesNotMatch(html, /<script/)
+  assert.doesNotMatch(html, /<svg onload/)
+  assert.doesNotMatch(html, /"><script/)
+  assert.doesNotMatch(html, /onload=alert\(2\)>/)
+  assert.match(html, /&lt;script&gt;alert\(1\)/)
+  assert.equal((html.match(/<svg /g) || []).length, (html.match(/<\/svg>/g) || []).length)
 })
