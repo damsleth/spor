@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { execFileSync } from "node:child_process"
-import { parseJsonc, readConfig, readSecrets, llmCommand, getReport, formatReport, askPrompt, trimReport, parseArgs } from "../bin/spor.mjs"
+import { parseJsonc, readConfig, readSecrets, secretsJson, llmCommand, getReport, formatReport, askPrompt, trimReport, parseArgs } from "../bin/spor.mjs"
 import { raw } from "./fixture-config.js"
 
 const realFetch = globalThis.fetch
@@ -122,4 +122,26 @@ test("spor report marks the bot share as an upper bound when the report is parti
   const host = { host: "a.example.com", requests: 3000, ok2xx: 3000, pageviews: 2000, bots: 1000, pages: [], referers: [], probes: [], origins: [] }
   assert.match(formatReport({ days: 7, partial: true, hosts: [host] }), /≤\s*33% bots/)
   assert.doesNotMatch(formatReport({ days: 7, partial: false, hosts: [host] }), /≤/)
+})
+
+// ---- review round 3 (2026-10-04) ---------------------------------------------------------
+
+test("spor secrets: the three required secrets as JSON, quotes stripped, comments and extras ignored", () => {
+  const dir = mkdtempSync(join(tmpdir(), "spor-"))
+  const vars = join(dir, ".dev.vars")
+  writeFileSync(vars, '# my instance\nCF_ACCOUNT_ID=acct\nCF_ANALYTICS_TOKEN="tok"\n\nDASHBOARD_PASSWORD=\'pw with spaces\'\nOTHER=x\n')
+  assert.deepEqual(JSON.parse(secretsJson(vars)), { CF_ACCOUNT_ID: "acct", CF_ANALYTICS_TOKEN: "tok", DASHBOARD_PASSWORD: "pw with spaces" })
+  writeFileSync(vars, "CF_ACCOUNT_ID=acct\n")
+  assert.throws(() => secretsJson(vars), /CF_ANALYTICS_TOKEN, DASHBOARD_PASSWORD/)
+})
+
+test("spor secrets refuses to print to a terminal", () => {
+  const dir = mkdtempSync(join(tmpdir(), "spor-"))
+  writeFileSync(join(dir, ".dev.vars"), "CF_ACCOUNT_ID=a\nCF_ANALYTICS_TOKEN=b\nDASHBOARD_PASSWORD=c\n")
+  const bin = new URL("../bin/spor.mjs", import.meta.url).pathname
+  const piped = execFileSync(process.execPath, [bin, "secrets"], { cwd: dir, encoding: "utf8", env: { PATH: process.env.PATH } })
+  assert.deepEqual(JSON.parse(piped), { CF_ACCOUNT_ID: "a", CF_ANALYTICS_TOKEN: "b", DASHBOARD_PASSWORD: "c" })
+  let status = 0
+  try { execFileSync(process.execPath, [bin, "secrets"], { cwd: dir, env: { PATH: process.env.PATH, SPOR_ASSUME_TTY: "1" }, stdio: "pipe" }) } catch (e) { status = e.status }
+  assert.equal(status, 2)
 })

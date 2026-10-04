@@ -129,3 +129,8 @@ test("a missing vars.SPOR fails closed (503) instead of serving defaults", async
   }
   assert.equal(calls.length, 0)
 })
+
+test("a falsy non-object vars.SPOR (false, 0) also fails closed", async () => {
+  for (const SPOR of [false, 0]) assert.equal((await get("/", auth, { ...env, SPOR })).status, 503, String(SPOR))
+  assert.equal(calls.length, 0)
+})

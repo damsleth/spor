@@ -55,14 +55,29 @@ export function readConfig(path) {
   return { config: loadConfig(raw), llm: raw?.llm || null, file }
 }
 
-export function readSecrets(env = process.env, devVars = ".dev.vars") {
-  const file = {}
-  if (existsSync(devVars)) {
-    for (const line of readFileSync(devVars, "utf8").split("\n")) {
-      const m = /^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line)
-      if (m) file[m[1]] = m[2].replace(/^["']|["']$/g, "")
-    }
+// .dev.vars as dotenv: KEY=value lines, surrounding quotes stripped, comments and blanks ignored
+function parseDevVars(path) {
+  const values = {}
+  if (!existsSync(path)) return values
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const m = /^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line)
+    if (m) values[m[1]] = m[2].replace(/^(["'])(.*)\1$/, "$2")
   }
+  return values
+}
+
+export const REQUIRED_SECRETS = ["CF_ACCOUNT_ID", "CF_ANALYTICS_TOKEN", "DASHBOARD_PASSWORD"]
+
+// The production secrets as JSON for `wrangler secret bulk`, parsed exactly like the CLI reads them
+export function secretsJson(devVars = ".dev.vars") {
+  const values = parseDevVars(devVars)
+  const missing = REQUIRED_SECRETS.filter((k) => !values[k])
+  if (missing.length) throw new Error(`${devVars} is missing ${missing.join(", ")}`)
+  return JSON.stringify(Object.fromEntries(REQUIRED_SECRETS.map((k) => [k, values[k]])))
+}
+
+export function readSecrets(env = process.env, devVars = ".dev.vars") {
+  const file = parseDevVars(devVars)
   const pick = (k) => env[k] || file[k] || ""
   return {
     accountId: pick("CF_ACCOUNT_ID"), token: pick("CF_ANALYTICS_TOKEN"),
@@ -194,6 +209,7 @@ const HELP = `spor: stats for everything you host
   spor ask "question" [--days N] [--host H] [--llm "command"]
   spor hosts
   spor check
+  spor secrets | npx wrangler secret bulk     (production secrets from ./.dev.vars; never to a terminal)
 
 Source: --url / SPOR_URL with SPOR_PASSWORD (a running instance), or
 CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN (env or ./.dev.vars) for Analytics Engine directly.
@@ -219,6 +235,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   } else if (cmd === "hosts") {
     if (!config.hosts.length) console.log(dim(`no hosts configured${file ? ` in ${file}` : " (no ./wrangler.jsonc)"}`))
     for (const h of config.hosts) console.log(`${h}  ${dim(config.services[h])}`)
+  } else if (cmd === "secrets") {
+    if (process.stdout.isTTY || env.SPOR_ASSUME_TTY) {
+      throw new UsageError("refusing to print secrets to a terminal; pipe it: spor secrets | npx wrangler secret bulk")
+    }
+    process.stdout.write(secretsJson(".dev.vars"))
   } else if (cmd === "check") {
     const ok = (good, label) => {
       console.log(`${good ? "ok  " : "FAIL"} ${label}`)

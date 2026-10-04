@@ -73,7 +73,13 @@ async function readLimited(request, max) {
     if (size > max) { reader.cancel(); return null }
     chunks.push(value)
   }
-  return new TextDecoder().decode(chunks.length === 1 ? chunks[0] : new Uint8Array(chunks.flatMap((c) => [...c])))
+  const all = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    all.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(all)
 }
 
 if (url.pathname === "/api/spor" && request.method === "POST") {

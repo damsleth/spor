@@ -27,7 +27,9 @@ count, and a dashboard hostname. Everything else is checkable.
    from the dashboard URL. Put them, with a generated `DASHBOARD_PASSWORD`, in the
    instance's `.dev.vars`, which git ignores. Never echo them.
 5. **Instance repo:** add this repo as a submodule, copy `wrangler.example.jsonc`
-   and `tap/wrangler.example.jsonc`, and fill in `vars.SPOR.services` (host to a
+   and `tap/wrangler.example.jsonc` (after `mkdir -p tap`), and point their entry points
+   into the submodule: `"main": "spor/src/worker.js"` in `wrangler.jsonc` and
+   `"main": "../spor/tap/worker.js"` in `tap/wrangler.jsonc`. Then fill in `vars.SPOR.services` (host to a
    short, evidence-based description), `proxyHosts`, the dashboard route and the
    tap routes.
 6. **Write side, per host:**
@@ -35,9 +37,10 @@ count, and a dashboard hostname. Everything else is checkable.
    - A proxied non-Worker host gets a route in `tap/wrangler.jsonc`.
    - A DNS-only host must be orange-clouded first. Ask the owner, and mention
      WebSockets and Cloudflare's 100 s idle timeout.
-7. **Deploy:** `npx wrangler login`, `npx wrangler deploy`, then
-   `npx wrangler secret bulk` with the secrets as JSON on stdin, built from
-   `.dev.vars`. Then `npx wrangler deploy -c tap/wrangler.jsonc`.
+7. **Deploy:** `npx wrangler login`, `npx wrangler deploy` (it answers 503 until the
+   secrets exist), then `node spor/bin/spor.mjs secrets | npx wrangler secret bulk`.
+   That command refuses a terminal, so the values are never echoed. Then
+   `npx wrangler deploy -c tap/wrangler.jsonc`.
 8. **Verify live:**
    - Before secrets are set, the dashboard returns 503.
    - Without a password, and with a wrong one, it returns 401.

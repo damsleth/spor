@@ -5,7 +5,7 @@
 // Instance config comes from the Worker var SPOR (wrangler.jsonc "vars": { "SPOR": {...} }),
 // so this file holds no hostnames. See wrangler.example.jsonc.
 export function loadConfig(raw) {
-  const c = typeof raw === "string" ? JSON.parse(raw) : (raw || {})
+  const c = typeof raw === "string" ? JSON.parse(raw) : (raw ?? {})
   const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v)
   if (!isObject(c)) throw new Error("spor: config must be an object")
   if (c.services !== undefined && !isObject(c.services)) throw new Error("spor: config.services must be an object of host -> description")

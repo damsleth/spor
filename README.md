@@ -70,12 +70,14 @@ cp spor/tap/wrangler.example.jsonc tap/wrangler.jsonc # set main to "../spor/tap
 cp spor/.dev.vars.example .dev.vars                  # fill in; never commit
 npx wrangler login
 npx wrangler deploy                                  # answers 503 until the secrets are set
-node -e 'const l=require("fs").readFileSync(".dev.vars","utf8").trim().split("\n");process.stdout.write(JSON.stringify(Object.fromEntries(l.map(x=>x.split(/=(.*)/s).slice(0,2)))))' | npx wrangler secret bulk
+node spor/bin/spor.mjs secrets | npx wrangler secret bulk
 npx wrangler deploy -c tap/wrangler.jsonc
 ```
 
-`.dev.vars` only feeds `wrangler dev`. Production secrets are uploaded separately: the
-`secret bulk` line sends them as JSON on stdin, so they never appear in your shell history.
+`.dev.vars` only feeds `wrangler dev`. Production secrets are uploaded separately.
+`spor secrets` reads `.dev.vars` the same way the CLI does (quotes stripped, comments
+ignored, all three keys required) and prints JSON for `wrangler secret bulk`. It refuses to
+print to a terminal, so the values never reach your screen or your shell history.
 
 spor's own `.gitignore` sits inside the submodule and **does not protect your instance**.
 The instance needs its own `.gitignore` for `.dev.vars`, created before the file is.
