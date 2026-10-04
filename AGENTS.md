@@ -19,22 +19,26 @@ count, and a dashboard hostname. Everything else is checkable.
 2. **Enable Analytics Engine** in the dashboard (Workers → Analytics Engine →
    Enable). Until then, any deploy with an AE binding fails with code 10089. It needs
    no card.
-3. **Create a read-only API token** (Account Analytics:Read) and note the account ID
+3. **Ignore secrets first.** In the instance repo, write `.gitignore` with `.dev.vars`,
+   `node_modules/` and `.wrangler/`, then confirm with `git check-ignore .dev.vars`.
+   Do this **before** the file exists. spor's own `.gitignore` is inside the submodule
+   and doesn't cover the parent repo.
+4. **Create a read-only API token** (Account Analytics:Read) and note the account ID
    from the dashboard URL. Put them, with a generated `DASHBOARD_PASSWORD`, in the
    instance's `.dev.vars`, which git ignores. Never echo them.
-4. **Instance repo:** add this repo as a submodule, copy `wrangler.example.jsonc`
+5. **Instance repo:** add this repo as a submodule, copy `wrangler.example.jsonc`
    and `tap/wrangler.example.jsonc`, and fill in `vars.SPOR.services` (host to a
    short, evidence-based description), `proxyHosts`, the dashboard route and the
    tap routes.
-5. **Write side, per host:**
+6. **Write side, per host:**
    - A Workers site gets the tap from `snippets/`, on that site's own repo.
    - A proxied non-Worker host gets a route in `tap/wrangler.jsonc`.
    - A DNS-only host must be orange-clouded first. Ask the owner, and mention
      WebSockets and Cloudflare's 100 s idle timeout.
-6. **Deploy:** `npx wrangler login`, `npx wrangler deploy`, then
+7. **Deploy:** `npx wrangler login`, `npx wrangler deploy`, then
    `npx wrangler secret bulk` with the secrets as JSON on stdin, built from
    `.dev.vars`. Then `npx wrangler deploy -c tap/wrangler.jsonc`.
-7. **Verify live:**
+8. **Verify live:**
    - Before secrets are set, the dashboard returns 503.
    - Without a password, and with a wrong one, it returns 401.
    - With the password it returns 200, with the CSP and `no-store` headers.

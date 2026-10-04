@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { loadConfig, toJSON, clampDays, validHost, queries, build, render, escapeHtml, checkAuth, safeEqual, DEFAULT_DAYS, MAX_DAYS, OK_LIMIT } from "../src/report.js"
+import { loadConfig, requireConfig, windowStart, toJSON, clampDays, validHost, queries, build, render, escapeHtml, checkAuth, safeEqual, DEFAULT_DAYS, MAX_DAYS, OK_LIMIT } from "../src/report.js"
 import { config, raw } from "./fixture-config.js"
 
 const chrome = "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/140.0 Safari/537.36"
@@ -18,10 +18,10 @@ test("host must be one of the known hosts", () => {
   for (const bad of ["x' OR 1=1 --", "evil.example", "", null, "BLOG.EXAMPLE.COM"]) assert.equal(validHost(bad, config), null, String(bad))
 })
 
-test("SQL only ever interpolates a clamped int and an allowlisted host", () => {
+test("SQL only ever interpolates a computed window start and an allowlisted host", () => {
   const q = queries("7", "blog.example.com", config)
   for (const sql of Object.values(q)) {
-    assert.match(sql, /INTERVAL '7' DAY/)
+    assert.match(sql, new RegExp(`toDateTime\\('${windowStart(7)}'\\)`))
     assert.match(sql, /index1 = 'blog\.example\.com'/)
     assert.match(sql, /FROM spor_analytics WHERE/)
     assert.match(sql, /SUM\(_sample_interval\) AS n/)
@@ -30,7 +30,7 @@ test("SQL only ever interpolates a clamped int and an allowlisted host", () => {
   const hostile = queries("7' OR 1=1 --", "x' OR '1'='1", config)
   for (const sql of Object.values(hostile)) {
     assert.doesNotMatch(sql, /OR 1=1|OR '1'/)
-    assert.match(sql, new RegExp(`INTERVAL '${DEFAULT_DAYS}' DAY`))
+    assert.match(sql, new RegExp(`toDateTime\\('${windowStart(DEFAULT_DAYS)}'\\)`))
     assert.doesNotMatch(sql, /index1 =/)
   }
   assert.match(queries(7, null, config).ok, /LIMIT \d+/)
@@ -204,4 +204,35 @@ test("hostile host, description and referer cannot inject markup into the SVG or
   assert.doesNotMatch(html, /onload=alert\(2\)>/)
   assert.match(html, /&lt;script&gt;alert\(1\)/)
   assert.equal((html.match(/<svg /g) || []).length, (html.match(/<\/svg>/g) || []).length)
+})
+
+// ---- review round 1 (2026-10-04), each red before its fix --------------------------------
+
+test("config types are validated, and the Worker-side requireConfig refuses a missing config", () => {
+  for (const bad of [{ services: ["a.example.com"] }, { services: "x" }, { proxyHosts: "a.example.com" }, { title: 3 }, { dataset: 5 }, [1, 2]]) {
+    assert.throws(() => loadConfig(bad), /spor: config/, JSON.stringify(bad))
+  }
+  for (const missing of [undefined, null, ""]) assert.throws(() => requireConfig(missing), /vars\.SPOR/)
+  assert.deepEqual(requireConfig(raw).hosts, config.hosts)
+})
+
+test("the SQL window is whole UTC calendar days, the same days the charts show", () => {
+  const noon = Date.parse("2026-10-04T12:00:00Z")
+  assert.equal(windowStart(1, noon), "2026-10-04 00:00:00")
+  assert.equal(windowStart(7, noon), "2026-09-28 00:00:00")
+  assert.equal(windowStart(31, Date.parse("2026-03-01T00:30:00Z")), "2026-01-30 00:00:00")
+  for (const sql of Object.values(queries(7, null, config, noon))) {
+    assert.match(sql, /timestamp >= toDateTime\('2026-09-28 00:00:00'\)/)
+    assert.doesNotMatch(sql, /NOW\(\) - INTERVAL/)
+  }
+})
+
+test("when the detail query is capped, the bot share is shown as an upper bound", () => {
+  const full = Array.from({ length: OK_LIMIT }, (_, i) => ({ host: "blog.example.com", path: `/p${i}`, ua: chrome, method: "GET", n: 1 }))
+  const capped = build({ totals: [{ host: "blog.example.com", status: "200", n: 3000 }], ok: full }, config)
+  const html = render(capped, { days: 7, host: null, config, generated: "x" })
+  assert.match(html, /≤\s*33%/)
+  assert.match(html, /upper bound/i)
+  const exact = render(build(fixture, config), { days: 7, host: null, config, generated: "x" })
+  assert.doesNotMatch(exact, /≤/)
 })

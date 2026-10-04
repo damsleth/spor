@@ -121,3 +121,11 @@ test("an invalid config fails closed instead of querying", async () => {
   assert.equal(res.status, 503)
   assert.equal(calls.length, 0)
 })
+
+test("a missing vars.SPOR fails closed (503) instead of serving defaults", async () => {
+  for (const SPOR of [undefined, null, ""]) {
+    const res = await get("/", auth, { ...env, SPOR })
+    assert.equal(res.status, 503, String(SPOR))
+  }
+  assert.equal(calls.length, 0)
+})

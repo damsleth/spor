@@ -18,7 +18,7 @@ import { loadConfig, clampDays, validHost, queries, build, toJSON } from "../src
 
 // ---- config and secrets ---------------------------------------------------------------------
 
-// JSONC: drop // and /* */ comments outside strings, then trailing commas
+// JSONC: drop // and /* */ comments and trailing commas, never touching string contents
 export function parseJsonc(text) {
   let out = ""
   let inString = false
@@ -38,11 +38,13 @@ export function parseJsonc(text) {
       i += 2
       while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++
       i++
+    } else if (c === "," && /^\s*(\/\/[^\n]*\s*|\/\*[\s\S]*?\*\/\s*)*[}\]]/.test(text.slice(i + 1))) {
+      // trailing comma: the next meaningful character closes an object or array
     } else {
       out += c
     }
   }
-  return JSON.parse(out.replace(/,(\s*[}\]])/g, "$1"))
+  return JSON.parse(out)
 }
 
 export function readConfig(path) {
@@ -166,12 +168,19 @@ function runLlm(command, prompt) {
 
 // ---- cli --------------------------------------------------------------------------------------
 
+export class UsageError extends Error {}
+
 export function parseArgs(argv) {
   const args = { _: [] }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === "--json") args.json = true
-    else if (["--days", "--host", "--url", "--llm", "--config"].includes(a)) args[a.slice(2)] = argv[++i]
+    else if (["--days", "--host", "--url", "--llm", "--config"].includes(a)) {
+      const value = argv[i + 1]
+      if (value === undefined || value.startsWith("--")) throw new UsageError(`${a} needs a value`)
+      args[a.slice(2)] = value
+      i++
+    } else if (a.startsWith("--") && a !== "--help") throw new UsageError(`unknown option ${a}`)
     else args._.push(a)
   }
   return args
@@ -202,14 +211,17 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     console.log(args.json ? JSON.stringify(report, null, 2) : formatReport(report))
   } else if (cmd === "ask") {
     const question = rest.join(" ").trim()
-    if (!question) throw new Error('usage: spor ask "question"')
+    if (!question) throw new UsageError('usage: spor ask "question"')
     const report = await getReport({ secrets, config, days, host })
     await runLlm(llmCommand(args.llm, env, llm), askPrompt(question, report))
   } else if (cmd === "hosts") {
     if (!config.hosts.length) console.log(dim(`no hosts configured${file ? ` in ${file}` : " (no ./wrangler.jsonc)"}`))
     for (const h of config.hosts) console.log(`${h}  ${dim(config.services[h])}`)
   } else if (cmd === "check") {
-    const ok = (good, label) => console.log(`${good ? "ok  " : "FAIL"} ${label}`)
+    const ok = (good, label) => {
+      console.log(`${good ? "ok  " : "FAIL"} ${label}`)
+      if (!good) process.exitCode = 1
+    }
     ok(Boolean(file), `config ${file || "(no ./wrangler.jsonc; pass --config)"}`)
     ok(config.hosts.length > 0, `${config.hosts.length} hosts in vars.SPOR.services, dataset ${config.dataset}`)
     ok(Boolean(secrets.url || (secrets.accountId && secrets.token)), secrets.url ? `source: ${secrets.url}` : "source: Analytics Engine (CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN)")
@@ -218,7 +230,6 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       ok(true, `read ${report.hosts.length} hosts for the last day`)
     } catch (error) {
       ok(false, String(error.message))
-      process.exitCode = 1
     }
   } else {
     console.log(HELP)
@@ -231,6 +242,6 @@ const entry = process.argv[1] && existsSync(process.argv[1]) ? realpathSync(proc
 if (entry === realpathSync(fileURLToPath(import.meta.url))) {
   main().catch((error) => {
     console.error(`spor: ${error.message}`)
-    process.exit(1)
+    process.exit(error instanceof UsageError ? 2 : 1)
   })
 }

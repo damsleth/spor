@@ -96,3 +96,24 @@ test("ask trims each breakdown to its top 20 but keeps the whole daily series", 
   assert.equal(trimmed.hosts[0].daily.length, 31)
   assert.ok(askPrompt("q", { days: 31, hosts: [{ host: "a.example.com", probes: many, daily }] }).length < 4000)
 })
+
+// ---- review round 1 (2026-10-04) ---------------------------------------------------------
+
+test("JSONC: commas and brackets inside strings are never touched", () => {
+  assert.deepEqual(parseJsonc('{ "a": "x,]", "b": "y,}", "c": "say \\"hi\\",]", }'), { a: "x,]", b: "y,}", c: 'say "hi",]' })
+})
+
+test("bad flags are usage errors instead of silently swallowing the next argument", () => {
+  assert.throws(() => parseArgs(["report", "--days", "--json"]), /--days needs a value/)
+  assert.throws(() => parseArgs(["report", "--days"]), /--days needs a value/)
+  assert.throws(() => parseArgs(["report", "--bogus"]), /unknown option --bogus/)
+})
+
+test("spor check exits non-zero when any check fails, and usage errors exit 2", () => {
+  const dir = mkdtempSync(join(tmpdir(), "spor-"))
+  const bin = new URL("../bin/spor.mjs", import.meta.url).pathname
+  const env = { PATH: process.env.PATH }
+  const run = (args) => { try { execFileSync(process.execPath, [bin, ...args], { cwd: dir, env, stdio: "pipe" }); return 0 } catch (e) { return e.status } }
+  assert.equal(run(["check"]), 1)
+  assert.equal(run(["report", "--days"]), 2)
+})

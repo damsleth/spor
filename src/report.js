@@ -6,6 +6,13 @@
 // so this file holds no hostnames. See wrangler.example.jsonc.
 export function loadConfig(raw) {
   const c = typeof raw === "string" ? JSON.parse(raw) : (raw || {})
+  const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v)
+  if (!isObject(c)) throw new Error("spor: config must be an object")
+  if (c.services !== undefined && !isObject(c.services)) throw new Error("spor: config.services must be an object of host -> description")
+  if (c.proxyHosts !== undefined && !Array.isArray(c.proxyHosts)) throw new Error("spor: config.proxyHosts must be an array")
+  for (const k of ["title", "dataset", "llm"]) {
+    if (c[k] !== undefined && typeof c[k] !== "string") throw new Error(`spor: config.${k} must be a string`)
+  }
   const dataset = String(c.dataset || "spor_analytics")
   if (!/^[A-Za-z0-9_]+$/.test(dataset)) throw new Error("spor: config.dataset must match [A-Za-z0-9_]+")
   const services = Object.fromEntries(Object.entries(c.services || {}).map(([h, d]) => [String(h).toLowerCase(), String(d)]))
@@ -29,6 +36,12 @@ const PROBE = /wp-|\.php|\.env|\/\.git|xmlrpc|\/admin|\/cgi-bin|\/vendor\/|\/\.w
 // a proxy target is /<hostname>; scanners' /wp.php or /.well-known only look like one
 const TARGET = /^\/[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/i
 
+// The Worker refuses to run without a config (the CLI keeps loadConfig's lenient defaults)
+export function requireConfig(raw) {
+  if (raw === undefined || raw === null || raw === "") throw new Error("spor: vars.SPOR is missing from wrangler.jsonc")
+  return loadConfig(raw)
+}
+
 // ---- input -------------------------------------------------------------------------------
 
 export function clampDays(value) {
@@ -40,12 +53,18 @@ export function validHost(value, config) {
   return config.hosts.includes(value) ? value : null
 }
 
-// days, host and dataset are validated, so the only interpolated values are an int,
+// The window is whole UTC calendar days ending today, the same days the charts show
+export function windowStart(days, now = Date.now()) {
+  const today = Date.parse(new Date(now).toISOString().slice(0, 10) + "T00:00:00Z")
+  return new Date(today - (clampDays(String(days)) - 1) * 86400000).toISOString().slice(0, 19).replace("T", " ")
+}
+
+// days, host and dataset are validated, so the only interpolated values are a computed date,
 // an allowlisted host and a [A-Za-z0-9_] identifier
-export function queries(days, host, config) {
+export function queries(days, host, config, now = Date.now()) {
   const d = clampDays(String(days))
   const h = validHost(host, config)
-  const from = `FROM ${config.dataset} WHERE timestamp >= NOW() - INTERVAL '${d}' DAY` + (h ? ` AND index1 = '${h}'` : "")
+  const from = `FROM ${config.dataset} WHERE timestamp >= toDateTime('${windowStart(d, now)}')` + (h ? ` AND index1 = '${h}'` : "")
   const n = "SUM(_sample_interval) AS n"
   return {
     totals: `SELECT index1 AS host, blob5 AS status, ${n} ${from} GROUP BY host, status FORMAT JSON`,
@@ -203,12 +222,15 @@ function statusMix(status) {
 
 const fmt = (n) => n.toLocaleString("en-US")
 
-function hostSection(h, window, services) {
+// when the detail query is capped, humans are a lower bound, so bots (2xx - humans) are an upper bound
+const shareText = (share, capped) => (capped ? `≤${share}%` : `${share}%`)
+
+function hostSection(h, window, services, capped) {
   const share = h.ok2xx ? Math.round((h.bots / h.ok2xx) * 100) : 0
   const desc = services[h.host]
   return `<section class="card${h.pageviews ? "" : " quiet"}">
 <header><h2>${escapeHtml(h.host)}${desc ? ` <span class="desc">${escapeHtml(desc)}</span>` : ""}</h2></header>
-<p class="summary"><b>${fmt(h.requests)}</b> requests · <b>${fmt(h.pageviews)}</b> human page views · ${share}% of 2xx from bots</p>
+<p class="summary"><b>${fmt(h.requests)}</b> requests · <b>${fmt(h.pageviews)}</b> human page views · ${shareText(share, capped)} of 2xx from bots${capped ? " (upper bound)" : ""}</p>
 ${bars(h.daily, window, `${h.host} requests per day`)}
 ${statusMix(h.status)}
 <div class="grid">
@@ -281,7 +303,7 @@ export function render(model, { days, host, generated, config, today = new Date(
   const tiles = `<div class="tiles">
 <div class="tile"><div class="l">Requests</div><div class="v">${fmt(total)}</div><div class="s">last ${days} day${days === 1 ? "" : "s"}</div></div>
 <div class="tile"><div class="l">Human page views</div><div class="v">${fmt(views)}</div><div class="s">bots and assets excluded</div></div>
-<div class="tile"><div class="l">Bot share</div><div class="v">${share}%</div><div class="s">${share}% of 2xx from bots</div></div>
+<div class="tile"><div class="l">Bot share</div><div class="v">${shareText(share, model.partial)}</div><div class="s">${model.partial ? "upper bound: the detail query hit its cap" : `${share}% of 2xx from bots`}</div></div>
 <div class="tile"><div class="l">Hosts</div><div class="v">${model.length}</div><div class="s">${model.filter((h) => h.pageviews).length} with human traffic</div></div>
 </div>
 ${model.length ? `<div class="card"><p class="cap">Requests per day, all hosts</p>${bars(sum, window, "total requests per day", true)}</div>` : ""}`
@@ -296,7 +318,7 @@ ${CSS}
 <nav class="bar" aria-label="filters"><div class="seg" aria-label="days">${dayLinks}</div><div class="chips" aria-label="hosts">${hostLinks}</div></nav>
 ${model.partial ? `<p class="note">Breakdowns are partial: the detail query hit its ${OK_LIMIT}-group cap, so human counts are a lower bound.</p>` : ""}
 ${model.length ? `${tiles}
-${model.map((h) => hostSection(h, window, services)).join("\n")}` : `<p class="empty muted">No data in this window.</p>`}
+${model.map((h) => hostSection(h, window, services, model.partial)).join("\n")}` : `<p class="empty muted">No data in this window.</p>`}
 </body></html>`
 }
 

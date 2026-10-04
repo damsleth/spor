@@ -60,11 +60,19 @@ hosts and descriptions in `vars.SPOR`), `tap/wrangler.jsonc` and `.dev.vars`, wi
 this repo as a git submodule. See [AGENTS.md](AGENTS.md).
 
 ```bash
+git init my-spor && cd my-spor
+printf '.dev.vars\nnode_modules/\n.wrangler/\n' > .gitignore   # BEFORE any secret exists
+git check-ignore -q .dev.vars && echo "secrets are ignored"
 git submodule add https://github.com/damsleth/spor spor
+mkdir -p tap
 cp spor/wrangler.example.jsonc wrangler.jsonc        # set main to "spor/src/worker.js"
 cp spor/tap/wrangler.example.jsonc tap/wrangler.jsonc # set main to "../spor/tap/worker.js"
+cp spor/.dev.vars.example .dev.vars                  # fill in; never commit
 npx wrangler deploy && npx wrangler deploy -c tap/wrangler.jsonc
 ```
+
+spor's own `.gitignore` sits inside the submodule and **does not protect your instance**.
+The instance needs its own `.gitignore` for `.dev.vars`, created before the file is.
 
 Update it with `git submodule update --remote spor` and redeploy.
 

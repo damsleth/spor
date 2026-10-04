@@ -1,4 +1,4 @@
-import { loadConfig, checkAuth, clampDays, validHost, queries, build, render, toJSON } from "./report.js"
+import { requireConfig, checkAuth, clampDays, validHost, queries, build, render, toJSON } from "./report.js"
 
 const HEADERS = {
   "Cache-Control": "no-store",
@@ -55,9 +55,9 @@ export default {
 
     let config
     try {
-      config = loadConfig(env.SPOR)
+      config = requireConfig(env.SPOR)
     } catch {
-      return text(503, "spor config (vars.SPOR) is invalid")
+      return text(503, "spor config (vars.SPOR) is missing or invalid")
     }
     const days = clampDays(url.searchParams.get("days"))
     const host = validHost(url.searchParams.get("host"), config)
