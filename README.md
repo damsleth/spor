@@ -62,7 +62,7 @@ this repo as a git submodule. See [AGENTS.md](AGENTS.md).
 ```bash
 git submodule add https://github.com/damsleth/spor spor
 cp spor/wrangler.example.jsonc wrangler.jsonc        # set main to "spor/src/worker.js"
-cp spor/tap/wrangler.example.jsonc tap/wrangler.jsonc # set main to "../../spor/tap/worker.js"
+cp spor/tap/wrangler.example.jsonc tap/wrangler.jsonc # set main to "../spor/tap/worker.js"
 npx wrangler deploy && npx wrangler deploy -c tap/wrangler.jsonc
 ```
 
