@@ -125,7 +125,9 @@ export function formatReport(report, { top = 3 } = {}) {
   const width = Math.max(4, ...report.hosts.map((h) => h.host.length))
   for (const h of report.hosts) {
     const share = h.ok2xx ? Math.round((h.bots / h.ok2xx) * 100) : 0
-    lines.push(`${h.host.padEnd(width)}  ${String(h.requests).padStart(7)} req  ${String(h.pageviews).padStart(6)} views  ${String(share).padStart(3)}% bots` + (h.description ? dim(`  ${h.description}`) : ""))
+    // a partial report undercounts humans, so its bot share is an upper bound (as on the dashboard)
+    const bots = `${report.partial ? "≤" : ""}${share}%`.padStart(5)
+    lines.push(`${h.host.padEnd(width)}  ${String(h.requests).padStart(7)} req  ${String(h.pageviews).padStart(6)} views  ${bots} bots` + (h.description ? dim(`  ${h.description}`) : ""))
     const list = (label, pairs) => pairs.length && lines.push(dim(`${"".padEnd(width)}  ${label}: `) + pairs.slice(0, top).map(([k, v]) => `${k} ${v}`).join(", "))
     list("pages", h.pages)
     list("referers", h.referers)

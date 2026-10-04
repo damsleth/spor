@@ -189,12 +189,14 @@ test("the title comes from config and is escaped", () => {
   assert.doesNotMatch(html, /<home>/)
 })
 
-test("hostile host, description and referer cannot inject markup into the SVG or tables", () => {
+test("hostile hosts in data, descriptions, titles and referers cannot inject markup into the SVG or tables", () => {
   const evil = `"><script>alert(1)</script><svg onload=alert(2)>`
-  const cfg = loadConfig({ services: { [evil]: evil }, title: evil })
+  // a hostile host name can't come from config (rejected at load) but can arrive in data rows
+  assert.throws(() => loadConfig({ services: { [evil]: "x" } }), /invalid host name/)
+  const cfg = loadConfig({ services: { "a.example.com": evil }, title: evil })
   const model = build({
-    totals: [{ host: evil, status: evil, n: 5 }, { host: evil, status: "200", n: 5 }],
-    daily: [{ day: "2026-10-03 00:00:00", host: evil, n: 5 }],
+    totals: [{ host: evil, status: evil, n: 5 }, { host: evil, status: "200", n: 5 }, { host: "a.example.com", status: "200", n: 3 }],
+    daily: [{ day: "2026-10-03 00:00:00", host: evil, n: 5 }, { day: "2026-10-03 00:00:00", host: "a.example.com", n: 3 }],
     ok: [{ host: evil, path: evil, referer: evil, ua: chrome, country: evil, method: "VIEW", n: 1 }]
   }, cfg)
   const html = render(model, { days: 3, host: evil, config: cfg, generated: evil, today: "2026-10-03" })
@@ -235,4 +237,13 @@ test("when the detail query is capped, the bot share is shown as an upper bound"
   assert.match(html, /upper bound/i)
   const exact = render(build(fixture, config), { days: 7, host: null, config, generated: "x" })
   assert.doesNotMatch(exact, /≤/)
+})
+
+// ---- review round 2 (2026-10-04) ---------------------------------------------------------
+
+test("configured host names must be hostnames, so a quote can never reach SQL", () => {
+  for (const bad of ["a'b.example.com", "a b.example.com", "x.example.com --", "x.example.com;", "../x", ""]) {
+    assert.throws(() => loadConfig({ services: { [bad]: "x" } }), /spor: config.services/, JSON.stringify(bad))
+  }
+  assert.deepEqual(loadConfig({ services: { "xn--vr-1ia.example.com": "x", "a-b.c.example": "y" } }).hosts, ["xn--vr-1ia.example.com", "a-b.c.example"])
 })

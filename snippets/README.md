@@ -41,20 +41,46 @@ with `dataPoint` copied from `../tap/worker.js`. Never record the query string o
 
 **Hash-routed single-page apps** (`/#/post/x`): the fragment never reaches the server, and
 Cloudflare Web Analytics strips it too. So the client reports the route itself, on load and on
-`hashchange`:
+every `hashchange`:
 
 ```js
-const route = location.hash.replace(/^#/, "") || "/"
-navigator.sendBeacon("/api/spor", JSON.stringify({ route }))
+const sendRoute = () => navigator.sendBeacon("/api/spor", JSON.stringify({ route: location.hash.replace(/^#/, "") || "/" }))
+sendRoute()
+window.addEventListener("hashchange", sendRoute)
 ```
 
-The Worker validates the route against a strict pattern and writes it with path `/#<route>` and
-method `VIEW`:
+The beacon is then the only page-view signal, so keep the HTML shell out of the tap. In this
+case don't use the page-view `run_worker_first` list above. Serve `/` as a plain asset and let
+the Worker see only `/api/spor` and fall-through paths (404s and probes). Otherwise one load
+counts twice, as `GET /` and as `VIEW`.
+
+The Worker caps the body while reading it, because the endpoint is unauthenticated. It then
+validates the route against a strict pattern and writes it with path `/#<route>` and method
+`VIEW`:
 
 ```js
+// read at most `max` bytes; null if the body is larger
+async function readLimited(request, max) {
+  if (Number(request.headers.get("content-length") || 0) > max) return null
+  const reader = request.body?.getReader()
+  if (!reader) return ""
+  const chunks = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > max) { reader.cancel(); return null }
+    chunks.push(value)
+  }
+  return new TextDecoder().decode(chunks.length === 1 ? chunks[0] : new Uint8Array(chunks.flatMap((c) => [...c])))
+}
+
 if (url.pathname === "/api/spor" && request.method === "POST") {
+  const body = await readLimited(request, 2048)
+  if (body === null) return new Response(null, { status: 413 })
   let route
-  try { route = JSON.parse((await request.text()).slice(0, 2048)).route } catch {}
+  try { route = JSON.parse(body).route } catch {}
   if (typeof route !== "string" || !/^\/(about|post\/[a-z0-9-]{1,120})?$/.test(route)) return new Response(null, { status: 400 })
   const point = dataPoint(request, 200)
   point.blobs[0] = `/#${route}`

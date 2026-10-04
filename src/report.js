@@ -16,6 +16,10 @@ export function loadConfig(raw) {
   const dataset = String(c.dataset || "spor_analytics")
   if (!/^[A-Za-z0-9_]+$/.test(dataset)) throw new Error("spor: config.dataset must match [A-Za-z0-9_]+")
   const services = Object.fromEntries(Object.entries(c.services || {}).map(([h, d]) => [String(h).toLowerCase(), String(d)]))
+  // hosts reach SQL as literals (index1 = '<host>'), so only hostname characters are allowed
+  for (const h of Object.keys(services)) {
+    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(h)) throw new Error(`spor: config.services has an invalid host name: ${JSON.stringify(h)}`)
+  }
   return {
     title: String(c.title || "spor"),
     dataset,

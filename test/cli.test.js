@@ -117,3 +117,9 @@ test("spor check exits non-zero when any check fails, and usage errors exit 2", 
   assert.equal(run(["check"]), 1)
   assert.equal(run(["report", "--days"]), 2)
 })
+
+test("spor report marks the bot share as an upper bound when the report is partial", () => {
+  const host = { host: "a.example.com", requests: 3000, ok2xx: 3000, pageviews: 2000, bots: 1000, pages: [], referers: [], probes: [], origins: [] }
+  assert.match(formatReport({ days: 7, partial: true, hosts: [host] }), /≤\s*33% bots/)
+  assert.doesNotMatch(formatReport({ days: 7, partial: false, hosts: [host] }), /≤/)
+})
