@@ -1,0 +1,28 @@
+// spor dashboard + API. Copy to wrangler.jsonc in your instance (see AGENTS.md), then edit.
+// Secrets, never here: CF_ACCOUNT_ID, CF_ANALYTICS_TOKEN (Account Analytics:Read), DASHBOARD_PASSWORD.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "spor-stats",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-08-20",
+  "observability": { "enabled": true },
+  "routes": [{ "pattern": "stats.example.com", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    "SPOR": {
+      "title": "spor",
+      "dataset": "spor_analytics",
+      // every host you count, with a short description; also the ?host= allowlist
+      "services": {
+        "example.com": "personal website",
+        "blog.example.com": "personal blog",
+        "proxy.example.com": "CORS proxy"
+      },
+      // hosts whose first path segment is a target host (shows "proxy targets/callers")
+      "proxyHosts": ["proxy.example.com"],
+      // CLI only: command that answers `spor ask`, reads the prompt on stdin
+      "llm": "claude -p"
+    }
+  }
+}

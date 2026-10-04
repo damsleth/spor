@@ -1,0 +1,15 @@
+// spor-tap: pass-through route Worker that counts requests to hosts that aren't Workers
+// (a home server or VPS behind the Cloudflare proxy, Pages, another host). Copy to
+// tap/wrangler.jsonc in your instance and list one route per host.
+// A route only fires for orange-clouded (proxied) DNS records.
+{
+  "name": "spor-tap",
+  "main": "worker.js",
+  "compatibility_date": "2026-08-20",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "app.example.com/*", "zone_name": "example.com" }
+  ],
+  "analytics_engine_datasets": [{ "binding": "SPOR_ANALYTICS", "dataset": "spor_analytics" }]
+}
