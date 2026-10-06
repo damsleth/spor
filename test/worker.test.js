@@ -48,6 +48,11 @@ test("fails closed when any secret is missing", async () => {
   assert.equal(calls.length, 0)
 })
 
+test("the Worker never runs open: SPOR_AUTH in its env changes nothing", async () => {
+  assert.equal((await get("/", {}, { ...env, SPOR_AUTH: "off" })).status, 401)
+  assert.equal((await get("/", auth, { ...env, SPOR_AUTH: "off", DASHBOARD_PASSWORD: "" })).status, 503)
+})
+
 test("401 with a Basic challenge before touching Analytics Engine", async () => {
   for (const headers of [{}, { authorization: `Basic ${btoa("kim:nope")}` }]) {
     const res = await get("/", headers)

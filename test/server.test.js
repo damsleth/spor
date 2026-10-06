@@ -56,6 +56,20 @@ test("the server fails closed: no password or a broken config answers 503, auth 
   })
 })
 
+test("SPOR_AUTH=off: no password needed for the dashboard and API; ingest keeps its token", async () => {
+  await withServer({ SPOR_AUTH: "off", DASHBOARD_PASSWORD: "", INGEST_TOKEN: "tok" }, async (_, get) => {
+    const res = await get("/?days=7")
+    assert.equal(res.status, 200)
+    assert.match(res.headers.get("content-security-policy"), /default-src 'none'/)
+    assert.equal((await get("/api/report")).status, 200)
+    assert.equal((await get("/x")).status, 404)
+    assert.equal((await get("/api/ingest", { method: "POST", body: "{}" })).status, 401)
+  })
+  for (const SPOR_AUTH of ["OFF", "false", "0", ""]) {
+    await withServer({ SPOR_AUTH }, async (_, get) => assert.equal((await get("/")).status, 401, SPOR_AUTH))
+  }
+})
+
 test("dashboard and /api/report come from SQLite, with the Worker's headers", async () => {
   await withServer({}, async (app, get) => {
     app.store.addLocal({ host: "app.example.net", path: "/", referer: "", ua: chrome, country: "NO", status: "200", bot: "", origin: "", method: "GET" }, "nginx")

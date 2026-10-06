@@ -46,6 +46,7 @@ Environment, read from the process environment or `./.dev.vars`:
 | Variable | Default | |
 |---|---|---|
 | `DASHBOARD_PASSWORD` | (required) | Basic-auth password, the same as the Worker's |
+| `SPOR_AUTH` | (on) | `off` drops Basic auth on `/` and `/api/report`. Use it only when a private network alone can reach the server, such as the tailnet-only vhost below. `/api/ingest` keeps its token |
 | `SPOR_DB` | `spor.db` | SQLite file |
 | `SPOR_LISTEN` | `127.0.0.1:2650` | HTTP address |
 | `SPOR_SYSLOG` | (off) | UDP address for nginx, e.g. `127.0.0.1:2651` |
@@ -78,7 +79,8 @@ Without nginx, `tailscale serve --bg 2650` publishes the dashboard on the machin
 ## Verify
 
 - Without a password, and with a wrong one, `/` and `/api/report` return 401. With the
-  password they return 200, with the CSP and `no-store` headers.
+  password they return 200, with the CSP and `no-store` headers. With `SPOR_AUTH=off`
+  they return 200 without a password.
 - From outside the tailnet, nginx answers 403.
 - Send a labelled request to a local host, then look for it in `/api/report?days=1`. A host
   AE already counts appears only from its cutover, at the next full hour.

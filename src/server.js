@@ -175,8 +175,8 @@ function toRequest(req, base) {
   return new Request(new URL(req.url, base), { method: req.method, headers, body: hasBody ? Readable.toWeb(req) : undefined, duplex: hasBody ? "half" : undefined })
 }
 
-// env: DASHBOARD_PASSWORD (required), SPOR_DB, SPOR_LISTEN, SPOR_SYSLOG, INGEST_TOKEN,
-// CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN, SPOR_AE_SYNC_MINUTES
+// env: DASHBOARD_PASSWORD (required unless SPOR_AUTH=off), SPOR_AUTH, SPOR_DB, SPOR_LISTEN,
+// SPOR_SYSLOG, INGEST_TOKEN, CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN, SPOR_AE_SYNC_MINUTES
 export async function startServer({ spor, env = process.env, fetchImpl = fetch } = {}) {
   let config = null
   try {
@@ -184,6 +184,10 @@ export async function startServer({ spor, env = process.env, fetchImpl = fetch }
   } catch (error) {
     console.log(`spor: ${error.message}; every request answers 503 until it is fixed`)
   }
+  // SPOR_AUTH=off drops Basic auth on / and /api/report, for a server that only a private
+  // network can reach (a tailnet-only proxy). Exactly "off": anything else keeps auth on.
+  const open = env.SPOR_AUTH === "off"
+  if (open) console.log("spor: SPOR_AUTH=off, the dashboard and API need no password; keep the server private")
   const store = openStore(env.SPOR_DB || "spor.db")
   const listen = parseListen(env.SPOR_LISTEN, "127.0.0.1:2650")
   const timers = []
@@ -196,10 +200,10 @@ export async function startServer({ spor, env = process.env, fetchImpl = fetch }
       const request = toRequest(req, `http://${listen.host}`)
       const path = new URL(request.url).pathname
       if (path === "/api/ingest") {
-        response = config && env.DASHBOARD_PASSWORD ? await ingest(request, { token: env.INGEST_TOKEN, config, store }) : text(503, "spor is not configured")
+        response = config && (env.DASHBOARD_PASSWORD || open) ? await ingest(request, { token: env.INGEST_TOKEN, config, store }) : text(503, "spor is not configured")
       } else {
         response = await handle(request, {
-          ready: true, password: env.DASHBOARD_PASSWORD, spor, source: "the spor database", cache: null,
+          ready: true, password: env.DASHBOARD_PASSWORD, open, spor, source: "the spor database", cache: null,
           rows: async (days, host, cfg) => store.rows(days, host, cfg)
         })
       }

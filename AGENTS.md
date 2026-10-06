@@ -73,7 +73,9 @@ count, and a dashboard hostname. Everything else is checkable.
 - **Local sources accept only `vars.SPOR.local` hosts.** nginx logs `$server_name`, not
   the Host header, and `/api/ingest` needs its Bearer token.
 - **Fail closed.** Missing secrets or an invalid config return 503. Auth comes
-  before cache or AE access, and every response is `no-store`.
+  before cache or AE access, and every response is `no-store`. The only way to turn
+  auth off is `SPOR_AUTH=off` on the self-hosted server, for one that only a private
+  network can reach. The Worker has no such switch.
 - **No instance data in this repo:** no real hostnames, descriptions or account IDs.
   Tests use `test/fixture-config.js`.
 - `src/report.js` stays import-free, so `node:test` loads it directly. The server uses

@@ -17,10 +17,11 @@ export function text(status, body, extra = {}) {
 
 // ready: every secret the backend needs is set. rows(days, host, config) resolves to
 // { totals, daily, ok, paths, origins }. source names the store in the 502 message.
-export async function handle(request, { ready, password, spor, rows, source, cache }) {
+// open skips Basic auth; only the self-hosted server sets it, and only when told to (SPOR_AUTH=off).
+export async function handle(request, { ready, password, open = false, spor, rows, source, cache }) {
   // fail closed: without every secret there is no dashboard, not an open one
-  if (!ready || !password) return text(503, "spor is not configured")
-  if (!checkAuth(request.headers.get("authorization"), password)) {
+  if (!ready || (!password && !open)) return text(503, "spor is not configured")
+  if (!open && !checkAuth(request.headers.get("authorization"), password)) {
     return text(401, "authentication required", { "WWW-Authenticate": "Basic realm=\"spor\", charset=\"UTF-8\"" })
   }
   if (request.method !== "GET" && request.method !== "HEAD") return text(405, "method not allowed", { Allow: "GET, HEAD" })
