@@ -1,0 +1,32 @@
+# spor self-hosted backend. Install: see selfhost/README.md.
+# /opt/spor is the instance (wrangler.jsonc + the spor/ submodule); /etc/spor/env holds the secrets.
+[Unit]
+Description=spor self-hosted stats backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=spor
+WorkingDirectory=/opt/spor
+EnvironmentFile=/etc/spor/env
+Environment=SPOR_DB=/var/lib/spor/spor.db SPOR_LISTEN=127.0.0.1:2650 SPOR_SYSLOG=127.0.0.1:2651
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning /opt/spor/spor/bin/spor.mjs serve --config /opt/spor/wrangler.jsonc
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

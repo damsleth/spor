@@ -6,6 +6,7 @@
 //   spor ask "question" [--days N] [--llm CMD]   pipe the report + question to an LLM command
 //   spor hosts                                   configured hosts and what they are
 //   spor check                                   config, secrets, connectivity
+//   spor serve                                   the self-hosted backend (src/server.js)
 //
 // Source: a running instance (--url / SPOR_URL + SPOR_PASSWORD, works over Tailscale/ssh
 // tunnels/anywhere), or Analytics Engine directly (CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN from the
@@ -49,10 +50,10 @@ export function parseJsonc(text) {
 
 export function readConfig(path) {
   const file = resolve(path || "wrangler.jsonc")
-  if (!existsSync(file)) return { config: loadConfig({}), llm: null, file: null }
+  if (!existsSync(file)) return { config: loadConfig({}), raw: undefined, llm: null, file: null }
   const parsed = parseJsonc(readFileSync(file, "utf8"))
   const raw = parsed?.vars?.SPOR ?? parsed?.SPOR ?? parsed
-  return { config: loadConfig(raw), llm: raw?.llm || null, file }
+  return { config: loadConfig(raw), raw, llm: raw?.llm || null, file }
 }
 
 // .dev.vars as dotenv: KEY=value lines, surrounding quotes stripped, comments and blanks ignored
@@ -209,15 +210,30 @@ const HELP = `spor: stats for everything you host
   spor ask "question" [--days N] [--host H] [--llm "command"]
   spor hosts
   spor check
+  spor serve                                  self-hosted backend: SQLite, nginx syslog, /api/ingest, AE sync
   spor secrets | npx wrangler secret bulk     (production secrets from ./.dev.vars; never to a terminal)
 
 Source: --url / SPOR_URL with SPOR_PASSWORD (a running instance), or
 CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN (env or ./.dev.vars) for Analytics Engine directly.
-Config: vars.SPOR in ./wrangler.jsonc or --config FILE. LLM: --llm, SPOR_LLM, vars.SPOR.llm, or "claude -p".`
+Config: vars.SPOR in ./wrangler.jsonc or --config FILE. LLM: --llm, SPOR_LLM, vars.SPOR.llm, or "claude -p".
+serve reads DASHBOARD_PASSWORD, SPOR_DB, SPOR_LISTEN, SPOR_SYSLOG, INGEST_TOKEN and the CF_* pair
+from the environment or ./.dev.vars. See selfhost/README.md.`
 
 export async function main(argv = process.argv.slice(2), env = process.env) {
   const args = parseArgs(argv)
   const [cmd, ...rest] = args._
+  if (args._[0] === "serve") {
+    // a broken config must not stop the server: it answers 503 until the config is fixed
+    let raw
+    try {
+      raw = readConfig(args.config).raw
+    } catch (error) {
+      console.log(`spor: ${error.message}`)
+    }
+    const { startServer } = await import("../src/server.js")
+    await startServer({ spor: raw, env: { ...parseDevVars(".dev.vars"), ...env } })
+    return
+  }
   const { config, llm, file } = readConfig(args.config)
   const secrets = readSecrets(env)
   if (args.url) secrets.url = args.url

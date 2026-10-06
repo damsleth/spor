@@ -10,6 +10,7 @@ export function loadConfig(raw) {
   if (!isObject(c)) throw new Error("spor: config must be an object")
   if (c.services !== undefined && !isObject(c.services)) throw new Error("spor: config.services must be an object of host -> description")
   if (c.proxyHosts !== undefined && !Array.isArray(c.proxyHosts)) throw new Error("spor: config.proxyHosts must be an array")
+  if (c.local !== undefined && !Array.isArray(c.local)) throw new Error("spor: config.local must be an array")
   for (const k of ["title", "dataset", "llm"]) {
     if (c[k] !== undefined && typeof c[k] !== "string") throw new Error(`spor: config.${k} must be a string`)
   }
@@ -20,12 +21,18 @@ export function loadConfig(raw) {
   for (const h of Object.keys(services)) {
     if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(h)) throw new Error(`spor: config.services has an invalid host name: ${JSON.stringify(h)}`)
   }
+  // hosts the self-hosted backend counts itself (nginx log or /api/ingest); each must be a configured host
+  const local = (c.local || []).map((h) => String(h).toLowerCase())
+  for (const h of local) {
+    if (!(h in services)) throw new Error(`spor: config.local lists ${JSON.stringify(h)}, which is not in config.services`)
+  }
   return {
     title: String(c.title || "spor"),
     dataset,
     services,
     hosts: Object.keys(services),
-    proxyHosts: new Set((c.proxyHosts || []).map((h) => String(h).toLowerCase()))
+    proxyHosts: new Set((c.proxyHosts || []).map((h) => String(h).toLowerCase())),
+    local: new Set(local)
   }
 }
 
@@ -64,7 +71,8 @@ export function windowStart(days, now = Date.now()) {
 }
 
 // days, host and dataset are validated, so the only interpolated values are a computed date,
-// an allowlisted host and a [A-Za-z0-9_] identifier
+// an allowlisted host and a [A-Za-z0-9_] identifier. The capped queries break ties on the group
+// columns, so the cut is deterministic and the self-hosted store (src/store.js) cuts at the same rows.
 export function queries(days, host, config, now = Date.now()) {
   const d = clampDays(String(days))
   const h = validHost(host, config)
@@ -73,9 +81,9 @@ export function queries(days, host, config, now = Date.now()) {
   return {
     totals: `SELECT index1 AS host, blob5 AS status, ${n} ${from} GROUP BY host, status FORMAT JSON`,
     daily: `SELECT toStartOfInterval(timestamp, INTERVAL '1' DAY) AS day, index1 AS host, ${n} ${from} GROUP BY day, host ORDER BY day FORMAT JSON`,
-    ok: `SELECT index1 AS host, blob1 AS path, blob2 AS referer, blob3 AS ua, blob4 AS country, blob6 AS bot, blob8 AS method, ${n} ${from} AND blob5 >= '200' AND blob5 < '300' AND blob3 != '' GROUP BY host, path, referer, ua, country, bot, method ORDER BY n DESC LIMIT ${OK_LIMIT} FORMAT JSON`,
-    paths: `SELECT index1 AS host, blob1 AS path, blob5 AS status, ${n} ${from} GROUP BY host, path, status ORDER BY n DESC LIMIT 500 FORMAT JSON`,
-    origins: `SELECT index1 AS host, blob7 AS origin, ${n} ${from} AND blob7 != '' GROUP BY host, origin ORDER BY n DESC LIMIT 50 FORMAT JSON`
+    ok: `SELECT index1 AS host, blob1 AS path, blob2 AS referer, blob3 AS ua, blob4 AS country, blob6 AS bot, blob8 AS method, ${n} ${from} AND blob5 >= '200' AND blob5 < '300' AND blob3 != '' GROUP BY host, path, referer, ua, country, bot, method ORDER BY n DESC, host, path, referer, ua, country, bot, method LIMIT ${OK_LIMIT} FORMAT JSON`,
+    paths: `SELECT index1 AS host, blob1 AS path, blob5 AS status, ${n} ${from} GROUP BY host, path, status ORDER BY n DESC, host, path, status LIMIT 500 FORMAT JSON`,
+    origins: `SELECT index1 AS host, blob7 AS origin, ${n} ${from} AND blob7 != '' GROUP BY host, origin ORDER BY n DESC, host, origin LIMIT 50 FORMAT JSON`
   }
 }
 
@@ -291,7 +299,7 @@ td.n{width:56px;text-align:right;font-variant-numeric:tabular-nums;padding-left:
 .empty{text-align:center;padding:48px 0}
 @media (max-width:520px){body{padding:16px 12px 32px}.tile .v{font-size:24px}.card{padding:12px}}`
 
-export function render(model, { days, host, generated, config, today = new Date().toISOString().slice(0, 10) }) {
+export function render(model, { days, host, generated, config, cache = "cached up to 5 min", today = new Date().toISOString().slice(0, 10) }) {
   const services = config.services
   const window = windowDays(days, today)
   const link = (d, hst) => `?days=${d}${hst ? `&amp;host=${encodeURIComponent(hst)}` : ""}`
@@ -318,7 +326,7 @@ ${model.length ? `<div class="card"><p class="cap">Requests per day, all hosts</
 ${CSS}
 </style></head><body>
 <div class="top"><h1>${escapeHtml(config.title)}</h1>
-<p class="muted">${total} requests · last ${days} day${days === 1 ? "" : "s"}${host ? ` · ${escapeHtml(host)}` : ""} · generated ${escapeHtml(generated)} · cached up to 5 min</p></div>
+<p class="muted">${total} requests · last ${days} day${days === 1 ? "" : "s"}${host ? ` · ${escapeHtml(host)}` : ""} · generated ${escapeHtml(generated)}${cache ? ` · ${escapeHtml(cache)}` : ""}</p></div>
 <nav class="bar" aria-label="filters"><div class="seg" aria-label="days">${dayLinks}</div><div class="chips" aria-label="hosts">${hostLinks}</div></nav>
 ${model.partial ? `<p class="note">Breakdowns are partial: the detail query hit its ${OK_LIMIT}-group cap, so human counts are a lower bound.</p>` : ""}
 ${model.length ? `${tiles}

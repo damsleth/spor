@@ -1,14 +1,15 @@
 {
   "name": "spor",
-  "version": "0.1.0",
-  "description": "Stats for everything you host at home, at 0 kr: Cloudflare Workers + Analytics Engine, dashboard, API, CLI",
+  "version": "0.2.0",
+  "description": "Stats for everything you host at home, at 0 kr: Cloudflare Workers + Analytics Engine or self-hosted SQLite, dashboard, API, CLI",
   "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "serve": "node --disable-warning=ExperimentalWarning bin/spor.mjs serve"
   },
   "devDependencies": {
     "wrangler": "4.125.0"
@@ -17,6 +18,6 @@
     "spor": "bin/spor.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   }
 }

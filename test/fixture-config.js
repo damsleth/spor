@@ -10,6 +10,8 @@ export const raw = {
     "app.example.net": "demo app, \"quoted\" (home server)",
     "app.example.org": "another home-server app"
   },
-  proxyHosts: ["proxy.example.net"]
+  proxyHosts: ["proxy.example.net"],
+  // counted by the self-hosted backend itself (nginx log, /api/ingest)
+  local: ["app.example.net", "app.example.org"]
 }
 export const config = loadConfig(raw)
