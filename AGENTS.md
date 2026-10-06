@@ -2,7 +2,9 @@
 
 spor is a stats server for home setups: Cloudflare Workers write one data point per
 request to Analytics Engine (AE), and a Basic-auth Worker serves a dashboard and a JSON
-API over it. This file is the install guide and the rules for changing the code.
+API over it. The self-hosted backend (`spor serve`, [selfhost/](selfhost/README.md))
+serves the same dashboard and API from SQLite, fed by nginx, `/api/ingest` and an AE
+pull. This file is the install guide and the rules for changing the code.
 
 ## Install an instance (agent-led)
 
@@ -41,7 +43,11 @@ count, and a dashboard hostname. Everything else is checkable.
    secrets exist), then `node spor/bin/spor.mjs secrets | npx wrangler secret bulk`.
    That command refuses a terminal, so the values are never echoed. Then
    `npx wrangler deploy -c tap/wrangler.jsonc`.
-8. **Verify live:**
+8. **Self-hosted (optional, or instead of the dashboard Worker):** follow
+   [selfhost/README.md](selfhost/README.md). Hosts on the machine go under
+   `vars.SPOR.local`. Start the service and let the AE backfill finish before you wire up
+   nginx.
+9. **Verify live:**
    - Before secrets are set, the dashboard returns 503.
    - Without a password, and with a wrong one, it returns 401.
    - With the password it returns 200, with the CSP and `no-store` headers.
@@ -52,16 +58,24 @@ count, and a dashboard hostname. Everything else is checkable.
 
 ## Rules for changing spor
 
+- **Two backends, one report.** `src/http.js` holds everything both backends serve. A
+  backend supplies only the five result sets. `src/store.js` mirrors `queries()`: the
+  same filters, `LIMIT`s and tie-break. Change one and you change the other. The
+  self-hosted backend must give the same `/api/report` as the Worker on the same AE data.
 - **Workers Free gives 10 ms of CPU per request.** Aggregate in SQL (five capped
   queries) and only classify and render in JavaScript. Keep the `LIMIT`s.
 - **Every stored value is attacker-written.** Escape everything you render with
   `escapeHtml`, and keep the no-script CSP (`default-src 'none'; style-src
   'unsafe-inline'`): no external CSS, fonts or JavaScript. Inline SVG is fine.
 - **Only validated values reach SQL:** `days` is an integer from 1 to 31, `host`
-  must be a configured host, and `dataset` must match `[A-Za-z0-9_]+`.
+  must be a configured host, and `dataset` must match `[A-Za-z0-9_]+`. SQLite gets
+  bound parameters.
+- **Local sources accept only `vars.SPOR.local` hosts.** nginx logs `$server_name`, not
+  the Host header, and `/api/ingest` needs its Bearer token.
 - **Fail closed.** Missing secrets or an invalid config return 503. Auth comes
   before cache or AE access, and every response is `no-store`.
 - **No instance data in this repo:** no real hostnames, descriptions or account IDs.
   Tests use `test/fixture-config.js`.
-- `src/report.js` stays import-free, so `node:test` loads it directly. Run
-  `npm test` before every commit; it needs no network.
+- `src/report.js` stays import-free, so `node:test` loads it directly. The server uses
+  Node built-ins only (`node:sqlite`, `node:http`, `node:dgram`). Run `npm test` before
+  every commit; it needs no network.

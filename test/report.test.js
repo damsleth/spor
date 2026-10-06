@@ -121,7 +121,7 @@ test("bot share is bots over all 2xx requests, taken from the uncapped totals", 
 
 test("empty user agents are excluded from the capped detail query, and a full cap is flagged", () => {
   assert.match(queries(7, null, config).ok, /blob3 != ''/)
-  assert.match(queries(7, null, config).ok, new RegExp(`LIMIT ${OK_LIMIT} `))
+  assert.match(queries(7, null, config).ok, new RegExp(`ORDER BY n DESC, host, path, referer, ua, country, bot, method LIMIT ${OK_LIMIT} `))
   const full = Array.from({ length: OK_LIMIT }, (_, i) => ({ host: "blog.example.com", path: `/p${i}`, ua: chrome, method: "GET", n: 1 }))
   const model = build({ totals: [{ host: "blog.example.com", status: "200", n: OK_LIMIT }], ok: full }, config)
   assert.equal(model.partial, true)
@@ -246,4 +246,18 @@ test("configured host names must be hostnames, so a quote can never reach SQL", 
     assert.throws(() => loadConfig({ services: { [bad]: "x" } }), /spor: config.services/, JSON.stringify(bad))
   }
   assert.deepEqual(loadConfig({ services: { "xn--vr-1ia.example.com": "x", "a-b.c.example": "y" } }).hosts, ["xn--vr-1ia.example.com", "a-b.c.example"])
+})
+
+test("config.local: an array of configured hosts, lowercased; anything else is refused", () => {
+  assert.deepEqual([...config.local], ["app.example.net", "app.example.org"])
+  assert.deepEqual([...loadConfig({ services: { "a.example.com": "x" }, local: ["A.Example.com"] }).local], ["a.example.com"])
+  assert.equal(loadConfig({}).local.size, 0)
+  assert.throws(() => loadConfig({ services: { "a.example.com": "x" }, local: ["b.example.com"] }), /config.local lists "b.example.com"/)
+  assert.throws(() => loadConfig({ local: "a.example.com" }), /config.local must be an array/)
+})
+
+test("render: the cache note is optional (the self-hosted backend has none)", () => {
+  const opts = { days: 1, host: null, config, generated: "x" }
+  assert.match(render([], opts), /cached up to 5 min/)
+  assert.doesNotMatch(render([], { ...opts, cache: null }), /cached/)
 })

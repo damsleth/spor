@@ -19,6 +19,10 @@ language.
   Worker.
 - **Agent-led setup.** [AGENTS.md](AGENTS.md) is written so that an agent can
   stand up an instance end to end.
+- **Or self-hosted.** `spor serve` runs the same dashboard and API from one Node
+  process with SQLite, fed by nginx, an ingest endpoint and an Analytics Engine
+  pull. It counts tailnet-only and DNS-only hosts too. See
+  [selfhost/](selfhost/README.md).
 
 ## CLI
 
@@ -29,6 +33,7 @@ spor report --json | jq '.hosts[0]'       # the same model as /api/report
 spor ask "who reads my blog, and from where?"
 spor hosts                                # configured hosts and what they are
 spor check                                # config, secrets, connectivity
+spor serve                                # the self-hosted backend (selfhost/README.md)
 ```
 
 The CLI reads either a running instance, using `SPOR_URL` and `SPOR_PASSWORD`,
@@ -47,11 +52,14 @@ instructions.
 
 | Part | What it does |
 |---|---|
-| `src/worker.js` | The dashboard at `/` and the JSON API at `/api/report?days=&host=`, behind Basic auth |
+| `src/worker.js` | The Cloudflare backend: the dashboard and API over Analytics Engine SQL |
+| `src/server.js`, `src/store.js` | The self-hosted backend: the same dashboard and API over SQLite, fed by nginx, `/api/ingest` and an AE pull |
+| `src/http.js` | What both backends serve: the dashboard at `/` and the JSON API at `/api/report?days=&host=`, behind Basic auth |
 | `src/report.js` | Pure logic: config, SQL, classification (bots, assets, probes, referers) and rendering |
 | `bin/spor.mjs` | The CLI: `report`, `ask`, `hosts`, `check`. Node built-ins only |
 | `tap/worker.js` | A pass-through route Worker for hosts that aren't Workers |
 | `snippets/` | How a Workers site writes its own data point, including hash-routed single-page apps |
+| `selfhost/` | systemd unit, nginx log format and dashboard vhost, install guide |
 
 ## An instance
 
@@ -86,5 +94,5 @@ Update it with `git submodule update --remote spor` and redeploy.
 
 ## Status
 
-v0.1 runs on Cloudflare and is in daily use for one home setup. A self-hosted
-backend for tailnet-only machines is on the [roadmap](ROADMAP.md). MIT licensed.
+v0.2 runs on Cloudflare, or self-hosted next to it or instead of it, and is in daily use
+for one home setup. See the [roadmap](ROADMAP.md). MIT licensed.
