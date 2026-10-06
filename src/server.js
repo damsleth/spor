@@ -188,6 +188,7 @@ export async function startServer({ spor, env = process.env, fetchImpl = fetch }
   const listen = parseListen(env.SPOR_LISTEN, "127.0.0.1:2650")
   const timers = []
   let running = null
+  let synced = false
 
   const server = createServer(async (req, res) => {
     let response
@@ -231,8 +232,12 @@ export async function startServer({ spor, env = process.env, fetchImpl = fetch }
     const secrets = { accountId: env.CF_ACCOUNT_ID, token: env.CF_ANALYTICS_TOKEN }
     const minutes = Math.max(1, Number(env.SPOR_AE_SYNC_MINUTES) || 5)
     const sync = () => {
+      // the first sync (the backfill) is logged; later ones only when they fail
       running ??= syncAE(store, secrets, config, { fetchImpl })
-        .then((n) => console.log(`spor: AE sync pulled ${n} rows`))
+        .then((n) => {
+          if (!synced) console.log(`spor: AE sync pulled ${n} rows`)
+          synced = true
+        })
         .catch((error) => console.log(`spor: AE sync failed: ${error.message}`))
         .finally(() => { running = null })
       return running

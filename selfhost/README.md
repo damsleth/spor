@@ -12,7 +12,7 @@ Analytics Engine ──SQL pull every 5 min─┘
 
 | Source | What it counts | Turned on by |
 |---|---|---|
-| nginx | every request to a host in `vars.SPOR.local`, one JSON log line each | `SPOR_SYSLOG` and `nginx-spor-log.conf` |
+| nginx | every request to a host in `vars.SPOR.local`, one JSON log line each. Syslog is UDP, so lines sent while the service restarts are lost | `SPOR_SYSLOG` and `nginx-spor-log.conf` |
 | `POST /api/ingest` | data points in the tap's Analytics Engine shape, from any machine that can reach the server | `INGEST_TOKEN` |
 | Analytics Engine | everything the Workers and the tap write, backfilled for AE's 3 months of retention | `CF_ACCOUNT_ID` and `CF_ANALYTICS_TOKEN` |
 
