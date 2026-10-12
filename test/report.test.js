@@ -140,7 +140,7 @@ test("non-ASCII passwords authenticate (Basic credentials are UTF-8)", () => {
   assert.ok(!checkAuth(basic("kim", "blabar"), "blåbær"))
 })
 
-test("the daily series has one bar per day in the window, zero-filled", () => {
+test("the daily series has one point per day in the window, zero-filled", () => {
   const model = build({
     totals: [{ host: "blog.example.com", status: "200", n: 5 }],
     daily: [
@@ -150,8 +150,11 @@ test("the daily series has one bar per day in the window, zero-filled", () => {
   }, config)
   const html = render(model, { days: 3, host: null, config, generated: "x", today: "2026-10-03" })
   const card = html.slice(html.indexOf('<section'))
-  const bars = [...card.matchAll(/<rect [^>]*><title>([^<]+)<\/title>/g)].map((m) => m[1])
-  assert.deepEqual(bars, ["2026-10-01: 3", "2026-10-02: 0", "2026-10-03: 2"])
+  const chart = card.slice(card.indexOf('<svg class="line"'), card.indexOf("</svg>", card.indexOf('<svg class="line"')))
+  const points = [...chart.matchAll(/<title>([^<]+)<\/title>/g)].map((m) => m[1])
+  assert.deepEqual(points, ["Thu 10-01: 3 requests", "Fri 10-02: 0 requests", "Sat 10-03: 2 requests"])
+  assert.match(chart, /<a href="\?days=3&amp;day=2026-10-01"><g class="pt">/, "a day with requests links into it")
+  assert.doesNotMatch(chart, /day=2026-10-02/, "an empty day doesn't")
 })
 
 test("every configured host has a short description, and the descriptions are escaped", () => {

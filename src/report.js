@@ -412,6 +412,8 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
         host: name, requests: 0, ok2xx: 0, humans2xx: 0, pageviews: 0, bots: 0, visitors: 0, status: new Map(), daily: new Map(), pages: new Map(),
         referers: new Map(), countries: new Map(), browsers: new Map(), probes: new Map(), targets: new Map(), origins: new Map(),
         cities: new Map(), networks: new Map(), classes: new Map(), agents: new Map(), ips: new Map(), names: new Map(),
+        // unique visitors per day: "YYYY-MM-DD" -> visitors
+        visitorsDaily: new Map(),
         // map points: "lat,lon|country|city" -> { lat, lon, n, label, country }
         places: new Map()
       })
@@ -478,7 +480,11 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
     add(h.classes, id, n)
     add(h.agents, `${id}\t${agentName(r, id)}`, n)
   }
-  for (const r of visitors) get(r.host).visitors += num(r.v)
+  for (const r of visitors) {
+    const h = get(r.host)
+    h.visitors += num(r.v)
+    add(h.visitorsDaily, String(r.day).slice(0, 10), num(r.v))
+  }
   for (const r of ips) {
     const h = get(r.host)
     add(h.ips, r.ip, num(r.n))
@@ -522,7 +528,7 @@ export function toJSON(model, config, { days, host, filters = {} } = {}) {
     ...(filters.view === "sink" ? { sink: { bait: [...(model.sinkkinds || [])].sort((a, b) => b[1] - a[1]), canaries: model.canaries || [] } } : {}),
     hosts: model.map((h) => ({
       host: h.host, service: serviceOf(h.host, config), description: config.services[h.host] || config.services[serviceOf(h.host, config)] || null,
-      requests: h.requests, ok2xx: h.ok2xx, pageviews: h.pageviews, bots: h.bots, visitors: h.visitors,
+      requests: h.requests, ok2xx: h.ok2xx, pageviews: h.pageviews, bots: h.bots, visitors: h.visitors, visitorsDaily: [...h.visitorsDaily.entries()].sort(),
       status: top(h.status), daily: [...h.daily.entries()].sort(), pages: top(h.pages), referers: top(h.referers),
       countries: top(h.countries), browsers: top(h.browsers), probes: top(h.probes), targets: top(h.targets), origins: top(h.origins),
       cities: top(h.cities), networks: top(h.networks).map(([asn, n]) => [asn, h.names.get(`as:${asn}`) || "", n]),
@@ -577,28 +583,70 @@ function windowDays(days, today) {
   return Array.from({ length: days }, (_, i) => new Date(end - (days - 1 - i) * 86400000).toISOString().slice(0, 10))
 }
 
-const WIDTH = 200
-// Zero-filled per-day bars as inline SVG; one <rect> (with a hover <title>) per day in the window
-// Hourly windows have "YYYY-MM-DD HH" keys; dayLink(day), when given, makes each day bar a link.
-function bars(daily, window, label, tall = false, dayLink = null) {
-  if (!daily.size) return ""
-  const hourly = window[0].length > 10
-  const unit = hourly ? "hour" : "day"
-  const series = window.map((day) => [day, daily.get(day) || 0])
-  const max = Math.max(1, ...series.map(([, v]) => v))
-  const height = 40
-  const step = WIDTH / series.length
-  const bw = Math.min(12, Math.max(1, +(step * 0.6).toFixed(1)))
-  const rects = series.map(([day, v], i) => {
-    const h = v ? Math.max(2, Math.round((v / max) * (height - 2))) : 1
-    const rect = `<rect x="${+(i * step + (step - bw) / 2).toFixed(1)}" y="${height - h}" width="${bw}" height="${h}"${v ? "" : ` class="z"`}><title>${escapeHtml(hourly ? `${day}:00` : day)}: ${v}</title></rect>`
-    return dayLink && v && !hourly ? `<a href="${dayLink(day)}">${rect}</a>` : rect
-  }).join("")
-  const first = hourly ? `${window[0].slice(5)}:00` : window[0].slice(5)
-  const last = hourly ? `${window[window.length - 1].slice(11)}:00` : window[window.length - 1].slice(5)
-  return `<svg class="spark${tall ? " tall" : ""}" viewBox="0 0 ${WIDTH} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(label)}: ${max} peak per ${unit}, ${escapeHtml(window[0])} to ${escapeHtml(window[window.length - 1])}">${rects}</svg>
-<div class="axis"><span>${escapeHtml(first)}</span><span>peak ${max}/${unit}</span><span>${escapeHtml(last)}</span></div>`
+// ---- charts --------------------------------------------------------------------------------
+// Inline SVG and CSS only (the page runs no script). Hovering a point, cell, slice or place shows
+// its label at once (a hidden group that CSS :hover reveals); a <title> carries the same text for
+// screen readers and touch.
+
+// A hover label at (x, y), kept inside a w x h chart; size is the font size in chart units
+function tipBox(x, y, text, w, h, size = 11) {
+  const tw = Math.round(text.length * size * 0.58 + size)
+  const th = Math.round(size * 1.8)
+  const bx = Math.round(Math.min(Math.max(1, x + size * 0.8), w - tw - 1))
+  const by = Math.round(Math.min(Math.max(1, y - th - size * 0.6), h - th - 1))
+  return `<g class="tip"><rect x="${bx}" y="${by}" width="${tw}" height="${th}" rx="${Math.round(size * 0.4)}"/><text x="${bx + Math.round(size * 0.5)}" y="${by + Math.round(size * 1.25)}" font-size="${size}">${escapeHtml(text)}</text></g>`
 }
+
+// 1, 2, 2.5 or 5 times a power of ten, at least v: the top of a chart's scale
+function niceMax(v) {
+  if (v <= 0) return 1
+  const p = 10 ** Math.floor(Math.log10(v))
+  return [1, 2, 2.5, 5, 10].map((m) => m * p).find((m) => m >= v)
+}
+const short = (n) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${+(n / 1e3).toFixed(1)}k` : String(+n.toFixed(1)))
+const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+// "2026-10-06" -> "Tue 10-06", "2026-10-06 14" -> "10-06 14:00"
+const keyLabel = (k) => (k.length > 10 ? `${k.slice(5, 10)} ${k.slice(11)}:00` : `${DOW[(new Date(`${k}T00:00:00Z`).getUTCDay() + 6) % 7]} ${k.slice(5)}`)
+
+// A line chart over the window's keys (days, or a day's hours), zero-filled, like Cloudflare's:
+// gridlines with values, a few x labels, a filled line, and per point a hover column with a guide,
+// a dot and its label. dayLink(key), when given, makes a day's column a link into that day.
+const CW = 720
+const CH = 170
+function lineChart(series, window, noun, dayLink = null) {
+  const vals = window.map((k) => series.get(k) || 0)
+  if (!vals.some(Boolean)) return ""
+  const max = niceMax(Math.max(...vals))
+  const L = 40
+  const R = 10
+  const T = 10
+  const B = 24
+  const span = CW - L - R
+  const x = (i) => L + (window.length === 1 ? span / 2 : (i * span) / (window.length - 1))
+  const y = (v) => T + (CH - T - B) * (1 - v / max)
+  const fx = (n) => n.toFixed(1)
+  const grid = [0, 1, 2, 3, 4].map((t) => {
+    const v = (max * t) / 4
+    return `<line class="g" x1="${L}" x2="${CW - R}" y1="${fx(y(v))}" y2="${fx(y(v))}"/><text class="ax" x="${L - 6}" y="${fx(y(v) + 4)}" text-anchor="end">${short(v)}</text>`
+  }).join("")
+  const every = Math.max(1, Math.ceil(window.length / 7))
+  const xlabels = window.map((k, i) => (i % every === 0 || i === window.length - 1) && (i === window.length - 1 || window.length - 1 - i >= every / 2)
+    ? `<text class="ax" x="${fx(x(i))}" y="${CH - 6}" text-anchor="middle">${escapeHtml(k.length > 10 ? `${k.slice(11)}:00` : k.slice(5))}</text>`
+    : "").join("")
+  const pts = vals.map((v, i) => `${fx(x(i))},${fx(y(v))}`)
+  const line = `M${pts.join("L")}`
+  const area = `${line}L${fx(x(vals.length - 1))},${fx(y(0))}L${fx(x(0))},${fx(y(0))}Z`
+  const step = window.length > 1 ? span / (window.length - 1) : span
+  const hover = window.map((k, i) => {
+    const text = `${keyLabel(k)}: ${fmt(vals[i])} ${noun}`
+    const g = `<g class="pt"><rect class="hit" x="${fx(Math.max(L, x(i) - step / 2))}" y="${T}" width="${fx(Math.min(step, span))}" height="${CH - T - B}"/><line class="guide" x1="${fx(x(i))}" x2="${fx(x(i))}" y1="${T}" y2="${CH - B}"/><circle cx="${fx(x(i))}" cy="${fx(y(vals[i]))}" r="3.5"/>${tipBox(x(i), y(vals[i]), text, CW, CH)}<title>${escapeHtml(text)}</title></g>`
+    return dayLink && k.length === 10 && vals[i] ? `<a href="${dayLink(k)}">${g}</a>` : g
+  }).join("")
+  return `<svg class="line" viewBox="0 0 ${CW} ${CH}" role="img" aria-label="${escapeHtml(noun)}, ${escapeHtml(window[0])} to ${escapeHtml(window[window.length - 1])}, peak ${fmt(Math.max(...vals))}">${grid}${xlabels}<path class="area" d="${area}"/><path class="stroke" d="${line}"/>${hover}</svg>`
+}
+
+// A labelled chart row: the name and total on the left, the chart on the right
+const chartRow = (name, total, svg) => (svg ? `<div class="chart"><div><p class="cap">${escapeHtml(name)}</p><p class="big">${fmt(total)}</p></div>${svg}</div>` : "")
 
 // Visitors by city on a world map: land is the outline from src/world.js (passed in, so this file
 // stays import-free), one circle per place, its area proportional to its count, linking to that
@@ -620,30 +668,57 @@ function worldMap(places, land, state) {
   return `<svg class="map" viewBox="0 0 720 288" role="img" aria-label="visitors by city, ${list.length} places"><path d="${land}"/>${circles}</svg>`
 }
 
-const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-// Requests by weekday and UTC hour: one cell per hour, its opacity proportional to the busiest
+// Requests by weekday and UTC hour: one cell per hour, its opacity proportional to the busiest.
+// The colored cells come first; on top, a transparent hit area per cell holds its hover label, so a
+// label is never covered by a later cell (SVG paints in order and has no z-index).
 function heatmap(heat) {
   const max = Math.max(0, ...heat.flat())
   if (!max) return ""
-  const cells = heat.map((row, d) => row.map((v, h) => `<rect x="${24 + h * 10}" y="${d * 10}" width="9" height="9" style="opacity:${v ? (0.15 + 0.85 * v / max).toFixed(2) : 0.06}"><title>${DOW[d]} ${String(h).padStart(2, "0")}:00 UTC: ${v}</title></rect>`).join("")).join("")
+  const cells = heat.map((row, d) => row.map((v, h) => `<rect x="${24 + h * 10}" y="${d * 10}" width="9" height="9" style="opacity:${v ? (0.15 + 0.85 * v / max).toFixed(2) : 0.06}"/>`).join("")).join("")
+  const hits = heat.map((row, d) => row.map((v, h) => {
+    const text = `${DOW[d]} ${String(h).padStart(2, "0")}:00 UTC: ${fmt(v)} requests`
+    return `<g class="pt"><rect class="hit" x="${24 + h * 10}" y="${d * 10}" width="10" height="10"/><rect class="ring" x="${24 + h * 10}" y="${d * 10}" width="9" height="9"/>${tipBox(24 + h * 10 + 4, d * 10, text, 264, 82, 6)}<title>${escapeHtml(text)}</title></g>`
+  }).join("")).join("")
   const labels = DOW.map((d, i) => `<text x="0" y="${i * 10 + 8}">${d}</text>`).join("")
   const hours = [0, 6, 12, 18, 23].map((h) => `<text x="${24 + h * 10}" y="80">${String(h).padStart(2, "0")}</text>`).join("")
-  return `<svg class="heat" viewBox="0 0 264 82" role="img" aria-label="requests by weekday and hour, UTC, busiest ${max}">${labels}${cells}${hours}</svg>`
+  return `<svg class="heat" viewBox="0 0 264 82" role="img" aria-label="requests by weekday and hour, UTC, busiest ${max}">${labels}${cells}${hours}${hits}</svg>`
 }
 
-// Status-code mix: one stacked segment per status class (2xx/3xx/4xx/5xx/other), with a text legend
-function statusMix(status) {
+// Status codes as a donut: a slice per code (the top 8, the rest as "other"), colored by class
+// (2xx green, 3xx blue, 4xx orange, 5xx red), lighter for the less common codes of a class. The
+// center shows the total, or the hovered slice's code, count and share; a legend lists them all.
+function statusPie(status) {
   const total = [...status.values()].reduce((s, v) => s + v, 0)
   if (!total) return ""
-  const classes = new Map()
-  for (const [k, v] of status) {
-    const c = /^[2-5]\d\d$/.test(k) ? `c${k[0]}` : "co"
-    classes.set(c, (classes.get(c) || 0) + v)
+  const sorted = [...status].sort((a, b) => b[1] - a[1])
+  const slices = sorted.slice(0, 8)
+  const rest = sorted.slice(8).reduce((t, [, v]) => t + v, 0)
+  if (rest) slices.push(["other", rest])
+  const cls = (k) => (/^[2-5]\d\d$/.test(k) ? `c${k[0]}` : "co")
+  const seen = new Map()
+  const shade = (k) => {
+    const n = seen.get(cls(k)) || 0
+    seen.set(cls(k), n + 1)
+    return [1, 0.72, 0.5, 0.34][Math.min(n, 3)]
   }
-  const segs = [...classes].sort().map(([c, v]) => `<i class="${c}" style="width:${(v / total * 100).toFixed(1)}%"></i>`).join("")
-  const legend = top(status).map(([k, v]) => `<span class="${/^[2-5]\d\d$/.test(k) ? `c${k[0]}` : "co"}"><b>${escapeHtml(k)}</b> ${v}</span>`).join("")
-  const summary = [...classes].sort().map(([c, v]) => `${c === "co" ? "other" : `${c[1]}xx`} ${Math.round(v / total * 100)}%`).join(", ")
-  return `<div class="mix" role="img" aria-label="status mix: ${escapeHtml(summary)}">${segs}</div><p class="legend">${legend}</p>`
+  const C = 70
+  const RO = 62
+  const RI = 38
+  const pt = (r, a) => `${(C + r * Math.sin(a)).toFixed(2)},${(C - r * Math.cos(a)).toFixed(2)}`
+  let a0 = 0
+  const pct = (v) => (v / total < 0.001 ? "<0.1%" : `${((v / total) * 100).toFixed(v / total < 0.1 ? 1 : 0)}%`)
+  const parts = slices.map(([k, v]) => {
+    const a1 = a0 + (v / total) * 2 * Math.PI
+    // a whole circle can't be one arc: two halves
+    const d = v === total
+      ? `M${pt(RO, 0)}A${RO},${RO} 0 1 1 ${pt(RO, Math.PI)}A${RO},${RO} 0 1 1 ${pt(RO, 0)}M${pt(RI, 0)}A${RI},${RI} 0 1 0 ${pt(RI, Math.PI)}A${RI},${RI} 0 1 0 ${pt(RI, 0)}Z`
+      : `M${pt(RO, a0)}A${RO},${RO} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${pt(RO, a1)}L${pt(RI, a1)}A${RI},${RI} 0 ${a1 - a0 > Math.PI ? 1 : 0} 0 ${pt(RI, a0)}Z`
+    a0 = a1
+    const text = `${k}: ${fmt(v)} (${pct(v)})`
+    return { k, v, svg: `<g class="pt"><path class="${cls(k)}" d="${d}" fill-rule="evenodd" style="opacity:${shade(k)}"/><text class="ctr" x="${C}" y="${C - 2}" text-anchor="middle">${escapeHtml(k)}</text><text class="ctr sub" x="${C}" y="${C + 14}" text-anchor="middle">${fmt(v)} · ${pct(v)}</text><title>${escapeHtml(text)}</title></g>` }
+  })
+  const legend = parts.map(({ k, v }) => `<li><i class="${cls(k)}"></i><b>${escapeHtml(k)}</b> ${fmt(v)} <span class="muted">${pct(v)}</span></li>`).join("")
+  return `<div class="statusbox"><svg class="pie" viewBox="0 0 140 140" role="img" aria-label="status codes: ${escapeHtml(parts.map(({ k, v }) => `${k} ${pct(v)}`).join(", "))}"><text class="total" x="${C}" y="${C - 2}" text-anchor="middle">${short(total)}</text><text class="total sub" x="${C}" y="${C + 14}" text-anchor="middle">requests</text>${parts.map((p) => p.svg).join("")}</svg><ul class="pielegend">${legend}</ul></div>`
 }
 
 const fmt = (n) => n.toLocaleString("en-US")
@@ -676,12 +751,12 @@ function combine(model, config, host = null) {
   const multi = services.size > 1
   const c = { services, multi, names: new Map(), hostnames: new Map(), places: new Map() }
   for (const k of ["requests", "pageviews", "visitors", "ok2xx", "bots"]) c[k] = model.reduce((t, h) => t + h[k], 0)
-  for (const k of ["status", "daily", "referers", "countries", "cities", "browsers", "networks", "classes", "agents", "ips", "origins", "pages", "probes", "targets"]) c[k] = new Map()
+  for (const k of ["status", "daily", "visitorsDaily", "referers", "countries", "cities", "browsers", "networks", "classes", "agents", "ips", "origins", "pages", "probes", "targets"]) c[k] = new Map()
   for (const h of model) {
     const svc = unitOf(h.host)
     // a page or probe key is "<unit>\t<path>" when several units are in view
     const scoped = (p) => (multi ? `${svc}\t${p}` : p)
-    for (const k of ["status", "daily", "referers", "countries", "cities", "browsers", "networks", "classes", "agents", "ips", "origins", "targets"]) merge(c[k], h[k])
+    for (const k of ["status", "daily", "visitorsDaily", "referers", "countries", "cities", "browsers", "networks", "classes", "agents", "ips", "origins", "targets"]) merge(c[k], h[k])
     merge(c.pages, h.pages, scoped)
     merge(c.probes, h.probes, scoped)
     for (const [k, v] of h.names) c.names.set(k, v)
@@ -714,8 +789,9 @@ function combinedSection(c, window, config, capped, state) {
   return `<section class="card">
 ${only ? `<header><h2>${escapeHtml(unitLabel(only))}${desc ? ` <span class="desc">${escapeHtml(desc)}</span>` : ""}</h2></header>` : ""}
 <p class="summary"><b>${fmt(c.requests)}</b> requests · <b>${fmt(c.pageviews)}</b> human page views${c.visitors ? ` · <b>${fmt(c.visitors)}</b> unique visitors` : ""} · ${shareText(share, capped)} of 2xx from bots${capped ? " (upper bound)" : ""}</p>
-${bars(c.daily, window, "requests", true, (day) => hrefFor(state, { day }))}
-${statusMix(c.status)}
+${chartRow("Requests", c.requests, lineChart(c.daily, window, "requests", (day) => hrefFor(state, { day })))}
+${window[0].length > 10 ? "" : chartRow("Unique visitors", c.visitors, lineChart(c.visitorsDaily, window, "visitors", (day) => hrefFor(state, { day })))}
+${statusPie(c.status)}
 <div class="grid">
 ${c.multi ? table("services", services, { label: (k) => config.services[k] ? `${k} · ${config.services[k]}` : unitLabel(k), link: (k) => hrefFor(state, { host: k }) }) : ""}${named ? table("host names", c.hostnames, { link: (k) => hrefFor(state, { host: exact(k) }) }) : ""}${table("pages", c.pages, scoped)}${table("referers", c.referers)}${table("countries", c.countries, by("country"))}${table("cities", c.cities)}${table("browsers", c.browsers)}${table("networks", c.networks, { label: (asn) => `AS${asn} ${c.names.get(`as:${asn}`) || ""}`.trim(), ...by("asn") })}${table("bots and AI", c.classes, { label: classLabel, ...by("class") })}${table("agents", c.agents, { label: (k) => k.slice(tab(k) + 1), link: (k) => filterLink(state, "class", k.slice(0, tab(k))) })}${table("IP addresses", c.ips, { label: (ip) => `${ip} ${c.names.get(`ip:${ip}`) || ""}`.trim(), ...by("ip") })}${table("404s and probes", c.probes, scoped)}${table("proxy targets", c.targets)}${table("proxy callers (Origin)", c.origins)}
 </div>
@@ -774,6 +850,23 @@ td.n{width:56px;text-align:right;font-variant-numeric:tabular-nums;padding-left:
 .cell a{color:inherit}.cell a:hover{color:var(--accent)}
 .spark a rect{cursor:pointer}
 .foot{font-size:12px;margin-top:24px}
+.chart{display:grid;grid-template-columns:140px 1fr;gap:12px;align-items:center;border-top:1px solid var(--line);padding:10px 0}.chart:first-of-type{border-top:0}
+.chart .big{font-size:24px;font-weight:650;margin:0;font-variant-numeric:tabular-nums}.chart .cap{margin:0}
+.line{display:block;width:100%;height:auto;overflow:visible}.line .g{stroke:var(--line);stroke-dasharray:3 3}.line .ax{fill:var(--muted);font-size:11px}
+.line .area{fill:var(--accent-soft)}.line .stroke{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round}
+.pt .hit{fill:transparent}.pt .guide,.pt circle,.pt .ring,.tip{visibility:hidden;pointer-events:none}
+.pt:hover .guide,.pt:hover circle,.pt:hover .ring,.pt:hover .tip{visibility:visible}
+.line .guide{stroke:var(--muted);stroke-width:1}.line .pt circle{fill:var(--card);stroke:var(--accent);stroke-width:2}
+.tip rect{fill:var(--card);stroke:var(--line)}.tip text{fill:var(--fg);text-decoration:none}svg a,svg a:hover{text-decoration:none}
+.heat .ring{fill:none;stroke:var(--fg);stroke-width:.8}
+.statusbox{display:flex;flex-wrap:wrap;align-items:center;gap:8px 24px;margin:4px 0 16px}
+.pie{width:140px;height:140px;flex:none}.pie path.c2{fill:var(--c2)}.pie path.c3{fill:var(--c3)}.pie path.c4{fill:var(--c4)}.pie path.c5{fill:var(--c5)}.pie path.co{fill:var(--co)}
+.pie path{stroke:var(--card);stroke-width:1.5}.pie .pt:hover path{filter:brightness(1.12)}
+.pie text{fill:var(--fg);font-size:15px;font-weight:650}.pie text.sub{fill:var(--muted);font-size:10px;font-weight:400}.pie .ctr{visibility:hidden}.pie .pt:hover .ctr{visibility:visible}.pie:has(.pt:hover) .total{visibility:hidden}
+.pielegend{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:2px 16px;font-size:12px;flex:1;min-width:200px}
+.pielegend li{display:flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}.pielegend i{width:9px;height:9px;border-radius:2px;flex:none}
+.pielegend .c2{background:var(--c2)}.pielegend .c3{background:var(--c3)}.pielegend .c4{background:var(--c4)}.pielegend .c5{background:var(--c5)}.pielegend .co{background:var(--co)}
+@media (max-width:520px){.chart{grid-template-columns:1fr}}
 .alerts{margin-bottom:16px;table-layout:auto}.alerts th{text-align:left;font-size:12px;color:var(--muted);font-weight:600;padding:2px 8px 4px 0}.alerts td{padding:3px 8px 3px 0;vertical-align:top;overflow-wrap:anywhere}
 .map{display:block;width:100%;height:auto}.map path{fill:var(--soft);stroke:var(--line);stroke-width:.6}
 .map circle{fill:var(--accent);fill-opacity:.45;stroke:var(--accent);stroke-width:.6}.map a:hover circle{fill-opacity:.8}

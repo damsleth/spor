@@ -135,7 +135,7 @@ test("render: every drill-down is a link that keeps the other filters, and activ
   assert.match(html, /href="\?days=7&amp;host=blog\.example\.com&amp;country=NO&amp;path=%2Fabout"/)
   assert.match(html, /href="\?days=7&amp;host=blog\.example\.com&amp;country=NO&amp;asn=2119"/)
   assert.match(html, /href="\?days=7&amp;host=blog\.example\.com"[^>]*>country: NO ×/)
-  assert.match(html, /<a href="\?days=7&amp;host=blog\.example\.com&amp;day=2026-10-06&amp;country=NO"><rect/)
+  assert.match(html, /<a href="\?days=7&amp;host=blog\.example\.com&amp;day=2026-10-06&amp;country=NO"><g class="pt">/)
   assert.match(html, /class="heat"/)
   assert.match(html, /Unique visitors/)
 })
@@ -283,4 +283,24 @@ test("resolving many aliases for many selected services stays cheap", async () =
   }
   const ratio = time(host) / time(null)
   assert.ok(ratio < 5, `selection costs ${ratio.toFixed(1)}x`)
+})
+
+test("the status donut has a slice per code, the rest as other, and survives a single code", async () => {
+  const many = build({ totals: ["200", "404", "301", "302", "304", "401", "403", "405", "500", "503"].map((status, i) => ({ host: "blog.example.com", status, n: 100 - i })) }, config)
+  const html = render(many, { days: 7, host: null, config, generated: "x" })
+  const pie = html.slice(html.indexOf('<svg class="pie"'), html.indexOf("</svg>", html.indexOf('<svg class="pie"')))
+  assert.equal((pie.match(/<path /g) || []).length, 9, "8 codes and other")
+  assert.match(pie, /<title>other: 183 \(/)
+  const one = render(build({ totals: [{ host: "blog.example.com", status: "200", n: 5 }] }, config), { days: 7, host: null, config, generated: "x" })
+  assert.match(one, /<path class="c2" d="M[^"]+A[^"]+A[^"]+M/, "a whole circle is drawn as two halves")
+})
+
+test("every chart label is escaped, and heatmap cells carry their hover label", () => {
+  const model = build({ totals: [{ host: "blog.example.com", status: "<b>", n: 3 }], heat: [{ dow: 1, hr: 9, n: 3 }] }, config)
+  const html = render(model, { days: 7, host: null, config, generated: "x" })
+  const pie = html.slice(html.indexOf('<svg class="pie"'), html.indexOf("</svg>", html.indexOf('<svg class="pie"')))
+  assert.doesNotMatch(pie, /<b>/)
+  assert.match(pie, /&lt;b&gt;/)
+  assert.match(html, /<title>Mon 09:00 UTC: 3 requests<\/title>/)
+  assert.match(html, /<g class="tip">[^]*?Mon 09:00 UTC: 3 requests<\/text>/)
 })
