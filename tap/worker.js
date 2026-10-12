@@ -126,9 +126,12 @@ async function canaryUsed(request, env, token, status) {
   const ctx = found ? `${found.host}|${baitIp}|${found.at}|${found.kind}` : ""
   await record(request, status, env, { kind: `use:${found?.kind || "unknown"}`, ctx })
   const now = Date.now()
+  // { sent } after a delivered alert (quiet for an hour), { sending } while one is out (a minute at
+  // most: the call times out after 5 s, and a lost isolate never clears it)
   const last = announced.get(token)
-  if (!env.CANARY_WEBHOOK || last === "sending" || now - (last || 0) < 3600000) return
-  announced.set(token, "sending")
+  if (!env.CANARY_WEBHOOK || (last?.sent && now - last.sent < 3600000) || (last?.sending && now - last.sending < 60000)) return
+  const attempt = { sending: now }
+  announced.set(token, attempt)
   if (announced.size > 1000) announced.clear()
   const url = new URL(request.url)
   const cf = request.cf || {}
@@ -138,13 +141,15 @@ async function canaryUsed(request, env, token, status) {
     const res = await fetch(env.CANARY_WEBHOOK, {
       method: "POST",
       headers: { title: "spor canary used", tags: "rotating_light", ...(env.CANARY_WEBHOOK_TOKEN ? { authorization: `Bearer ${env.CANARY_WEBHOOK_TOKEN}` } : {}) },
-      body: `A key from ${from} was used by ${who || "an unknown client"} on ${url.hostname}${url.pathname.slice(0, 64)}`
+      body: `A key from ${from} was used by ${who || "an unknown client"} on ${url.hostname}${url.pathname.slice(0, 64)}`,
+      signal: AbortSignal.timeout(5000)
     })
     if (!res.ok) throw new Error(`webhook answered ${res.status}`)
     // quiet for an hour only once the alert is out
-    announced.set(token, now)
+    if (announced.get(token) === attempt) announced.set(token, { sent: now })
   } catch (error) {
-    announced.delete(token)
+    // a newer attempt's lock is not ours to clear
+    if (announced.get(token) === attempt) announced.delete(token)
     console.log(`spor: canary alert failed: ${error.message}`)
   }
 }

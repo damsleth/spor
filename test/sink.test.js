@@ -218,13 +218,55 @@ test("an unreadable key shows as unknown bait, not a made-up probe", () => {
   assert.equal((html.match(/unknown bait/g) || []).length, 2)
 })
 
-test("the store keeps a local host's canary uses but not its bait, which nginx already counted", () => {
+test("a local host's probe counts once as traffic, and its bait still shows in the sinkhole view", () => {
   const s = openStore()
-  const h = Math.floor(Date.parse("2026-10-06T12:00:00Z") / 1000 / HOUR) * HOUR
+  const now = Date.parse("2026-10-06T12:30:00Z")
+  const h = Math.floor(now / 1000 / HOUR) * HOUR
   s.addLocal({ host: "app.example.net", path: "/.env", status: "404" }, "nginx", h + 10)
   s.replaceAE(h - HOUR, h + HOUR, [
     { hour: h, host: "app.example.net", path: "/.env", status: "200", sink: "bait:env", n: 1 },
     { hour: h, host: "app.example.net", path: "/_internal/x", status: "401", sink: "challenge", n: 1 }
   ])
-  assert.deepEqual(s.db.prepare("SELECT source, sink, status FROM hits ORDER BY source, sink").all().map((r) => ({ ...r })), [{ source: "ae", sink: "challenge", status: "401" }, { source: "nginx", sink: "", status: "404" }])
+  const traffic = toJSON(build(s.rows(1, "app.example.net", config, now), config), config).hosts[0]
+  assert.equal(traffic.requests, 2, "nginx's 404 and the challenge; the bait row is not traffic")
+  const sink = toJSON(build(s.rows(1, "app.example.net", config, now, { view: "sink" }), config), config, { filters: { view: "sink" } })
+  assert.deepEqual(sink.sink.bait, [["bait:env", 1], ["challenge", 1]])
+  s.replaceAE(h - HOUR, h + HOUR, [])
+  assert.equal(s.db.prepare("SELECT COUNT(*) AS c FROM hits WHERE source != 'nginx'").get().c, 0, "a re-pull replaces the bait rows too")
+})
+
+test("a header of repeated prefixes is scanned in linear time and holds no token", () => {
+  const evil = "spk_live_".repeat(7281) + "x".repeat(601)
+  const t = performance.now()
+  for (let i = 0; i < 20; i++) assert.equal(findToken(new Request("https://e.com/", { headers: { "x-api-key": evil } })), "")
+  assert.ok((performance.now() - t) / 20 < 5, "well under a millisecond each")
+  const good = "spk_live_" + "a".repeat(40)
+  assert.equal(findToken(new Request("https://e.com/", { headers: { "x-api-key": `${"spk_live_x ".repeat(3)}${good}` } })), good, "a later run can still be the token")
+})
+
+test("a stalled webhook locks a key's alerts for a minute, not forever", async () => {
+  const sent = []
+  const { env } = sinkEnv({ CANARY_WEBHOOK: "https://ntfy.example/c" })
+  globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith("https://ntfy.example")) {
+      sent.push(Date.now())
+      return new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)))
+    }
+    return new Response("ok")
+  }
+  const token = await makeToken("s3cret", { host: "example.com", ip: "198.51.100.9", kind: "git" })
+  const waits = []
+  const use = () => tap.fetch(probe("/_internal/x", { authorization: `Bearer ${token}` }), env, { waitUntil: (p) => waits.push(p) })
+  const until = async (ok) => { for (let i = 0; i < 200 && !ok(); i++) await new Promise((r) => setTimeout(r, 5)) }
+  await use()
+  await until(() => sent.length === 1)
+  await use()
+  await new Promise((r) => setTimeout(r, 50))
+  assert.equal(sent.length, 1, "one alert in flight at a time")
+  // the stalled call times out after 5 seconds and releases the key
+  await Promise.all(waits)
+  await use()
+  await until(() => sent.length === 2)
+  assert.equal(sent.length, 2, "after the call timed out, the next use alerts again")
+  await Promise.all(waits)
 })

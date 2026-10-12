@@ -41,7 +41,9 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`)
 ON CONFLICT DO UPDATE SET n = n + excluded.n`)
   const getMeta = db.prepare("SELECT value FROM meta WHERE key = ?")
   const setMeta = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT DO UPDATE SET value = excluded.value")
-  const deleteAE = db.prepare("DELETE FROM hits WHERE source = 'ae' AND hour >= ? AND hour < ?")
+  // source "ae" is AE's traffic; "sink" is AE's bait for a local host after its cutover, which
+  // nginx counted as traffic already: only the sinkhole view reads it
+  const deleteAE = db.prepare("DELETE FROM hits WHERE source IN ('ae', 'sink') AND hour >= ? AND hour < ?")
   const hasAE = db.prepare("SELECT 1 AS yes FROM hits WHERE source = 'ae' AND host = ? LIMIT 1")
 
   const meta = (key) => getMeta.get(key)?.value ?? null
@@ -88,10 +90,15 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
         deleteAE.run(from, to)
         for (const r of rows) {
           const since = cutover(r.host)
-          // a local host's canary uses and challenges stay: the tap answered those, so nginx never
-          // saw them. Bait it did see, as the origin's answer, and counts it already
-          if (since !== null && r.hour >= since && !/^(use:|challenge$)/.test(r.sink || "")) continue
           if (r.hour < from || r.hour >= to) continue
+          if (since !== null && r.hour >= since) {
+            // after a local host's cutover nginx counts its traffic. Canary uses and challenges
+            // stay (the tap answered them; nginx never saw them); bait nginx did see, as the origin's
+            // answer, so it is kept apart for the sinkhole view only
+            if (/^(use:|challenge$)/.test(r.sink || "")) insert(r.hour, r, "ae", Number(r.n) || 0)
+            else if (/^bait:/.test(r.sink || "")) insert(r.hour, r, "sink", Number(r.n) || 0)
+            continue
+          }
           insert(r.hour, r, "ae", Number(r.n) || 0)
         }
       })
@@ -108,7 +115,8 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
         values.push(v)
         return "?"
       }
-      const where = `FROM hits WHERE hour >= ? AND hour < ?${hostSql(h, config, "host", bind)}${filterSql(f, COLS, (v) => {
+      // bait kept apart from traffic (source "sink") counts in the sinkhole view only
+      const where = `FROM hits WHERE hour >= ? AND hour < ?${f.view === "sink" ? "" : " AND source != 'sink'"}${hostSql(h, config, "host", bind)}${filterSql(f, COLS, (v) => {
         values.push(v)
         return "?"
       })}`

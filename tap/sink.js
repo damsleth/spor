@@ -8,8 +8,17 @@
 // The bait points at /_internal/ on the probed host: requests there without a token get a 401
 // challenge, so git and HTTP clients send the credentials they found.
 
-// long enough for a 253-character host and an IPv6 address; a longer run is not a token of ours
-export const TOKEN = /spk_live_[A-Za-z0-9_-]{20,600}(?![A-Za-z0-9_-])/
+// A token is a whole run of token characters starting "spk_live_", 20 to 600 after the prefix
+// (long enough for a 253-character host and an IPv6 address). Each run is read once and measured,
+// so a header of repeated prefixes costs linear time, not a backtracking search per prefix.
+const RUN = /spk_live_[A-Za-z0-9_-]*/g
+function tokenIn(s) {
+  for (const m of String(s || "").matchAll(RUN)) {
+    const body = m[0].length - "spk_live_".length
+    if (body >= 20 && body <= 600) return m[0]
+  }
+  return ""
+}
 export const INTERNAL = "/_internal/"
 
 const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
@@ -53,7 +62,7 @@ export async function readToken(secret, token) {
 // a canary token anywhere a client would put a stolen key: the URL, Authorization (Bearer or Basic,
 // which git sends as base64 user:password) or X-Api-Key
 export function findToken(request) {
-  const found = (s) => TOKEN.exec(s || "")?.[0] || ""
+  const found = tokenIn
   const auth = request.headers.get("authorization") || ""
   let basic = ""
   const m = /^Basic\s+([A-Za-z0-9+/=]+)$/i.exec(auth.trim())
