@@ -1155,7 +1155,7 @@ function calendar(state, today) {
     const cls = [d === from || d === to ? "end" : from && to && d > from && d < to ? "in" : ""].filter(Boolean)
     const ok = d >= oldest && d <= today
     if (!ok) cls.push("off")
-    const next = picking === "to" && d >= from ? { from, to: d, pick: null, cal: null } : { from: d, to: null, pick: "to", cal: left }
+    const next = picking === "to" && d >= from ? { from, to: d, pick: null, cal: null, day: null } : { from: d, to: null, pick: "to", cal: left, day: null }
     const n = Number(d.slice(8))
     return `<td${cls.length ? ` class="${cls.join(" ")}"` : ""}>${ok ? `<a href="${hrefFor(state, next)}">${n}</a>` : `<span>${n}</span>`}</td>`
   }
