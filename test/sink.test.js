@@ -261,6 +261,8 @@ test("a stalled webhook locks a key's alerts for a minute, not forever", async (
   const waits = []
   const use = () => tap.fetch(probe("/_internal/x", { authorization: `Bearer ${token}` }), env, { waitUntil: (p) => waits.push(p) })
   const until = async (ok) => { for (let i = 0; i < 200 && !ok(); i++) await new Promise((r) => setTimeout(r, 5)) }
+  // AbortSignal.timeout doesn't hold the event loop open on Node 22: this does, until the test ends
+  const awake = setInterval(() => {}, 1000)
   await use()
   await until(() => sent.length === 1)
   await use()
@@ -272,6 +274,7 @@ test("a stalled webhook locks a key's alerts for a minute, not forever", async (
   await until(() => sent.length === 2)
   assert.equal(sent.length, 2, "after the call timed out, the next use alerts again")
   await Promise.all(waits)
+  clearInterval(awake)
 })
 
 test("a SELF_COUNTED host is outside the sinkhole: no token interception, no challenge, no record", async () => {

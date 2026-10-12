@@ -351,7 +351,8 @@ export function queries(days, host, config, now = Date.now(), filters = {}) {
     paths: `SELECT index1 AS host, blob1 AS path, blob5 AS status, ${n} ${from} GROUP BY host, path, status ORDER BY n DESC, host, path, status LIMIT 500 FORMAT JSON`,
     origins: `SELECT index1 AS host, blob7 AS origin, ${n} ${from} AND blob7 != '' GROUP BY host, origin ORDER BY n DESC, host, origin LIMIT 50 FORMAT JSON`,
     geo: `SELECT index1 AS host, blob4 AS country, blob10 AS region, blob9 AS city, blob15 AS lat, blob16 AS lon, ${n} ${from} AND ${ok} AND blob9 != ''${people} GROUP BY host, country, region, city, lat, lon ORDER BY n DESC, host, country, region, city, lat, lon LIMIT ${LIMITS.geo} FORMAT JSON`,
-    places: `SELECT index1 AS host, blob4 AS country, blob10 AS region, blob9 AS city, blob15 AS lat, blob16 AS lon, ${n} ${fromPlaces} AND ${ok} AND blob9 != '' AND blob15 != ''${rest.class || rest.view === "sink" ? "" : ` AND ${classSql("human", c)}`} GROUP BY host, country, region, city, lat, lon ORDER BY n DESC, host, country, region, city, lat, lon LIMIT ${LIMITS.geo} FORMAT JSON`,
+    // the selected places sort first (sel), so the LIMIT never drops them
+    places: `SELECT index1 AS host, blob4 AS country, blob10 AS region, blob9 AS city, blob15 AS lat, blob16 AS lon, ${country ? `if(blob4 = '${country}'${city ? ` AND blob9 = '${city}'` : ""}, 1, 0)` : "0"} AS sel, ${n} ${fromPlaces} AND ${ok} AND blob9 != '' AND blob15 != ''${rest.class || rest.view === "sink" ? "" : ` AND ${classSql("human", c)}`} GROUP BY host, country, region, city, lat, lon, sel ORDER BY sel DESC, n DESC, host, country, region, city, lat, lon LIMIT ${LIMITS.geo} FORMAT JSON`,
     networks: `SELECT index1 AS host, blob11 AS asn, blob12 AS asorg, ${n} ${from} AND blob11 != '' GROUP BY host, asn, asorg ORDER BY n DESC, host, asn, asorg LIMIT ${LIMITS.networks} FORMAT JSON`,
     agents: `SELECT index1 AS host, blob3 AS ua, blob6 AS bot, blob12 AS asorg, ${n} ${from} AND NOT ${human} GROUP BY host, ua, bot, asorg ORDER BY n DESC, host, ua, bot, asorg LIMIT ${LIMITS.agents} FORMAT JSON`,
     visitors: `SELECT index1 AS host, toStartOfInterval(timestamp, INTERVAL '1' DAY) AS day, count(DISTINCT blob13) AS v ${from} AND blob13 != ''${people} GROUP BY host, day FORMAT JSON`,
@@ -481,7 +482,7 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
     // per host too, for the API, only for hosts the filtered report has
     const h = hosts.get(normalizeHost(r.host))
     if (h) {
-      const q = h.places.get(key) || { ...p, n: 0 }
+      const q = h.places.get(key) || { lat, lon, n: 0, label: [r.city, r.region, r.country].filter(Boolean).join(", "), country: r.country || "", city: r.city || "" }
       q.n += num(r.n)
       h.places.set(key, q)
     }
@@ -685,15 +686,17 @@ function worldMap(places, land, state) {
   const picked = (p) => Boolean(state.country) && p.country === state.country && (!state.city || p.city === state.city)
   // the selection always makes the map, then the busiest of the rest up to the cap
   const all = [...places.values()].sort((a, b) => b.n - a.n)
-  const chosen = all.filter(picked).slice(0, MAP_PLACES)
+  const selectedAll = all.filter(picked)
+  const chosen = selectedAll.slice(0, MAP_PLACES)
   const list = [...chosen, ...all.filter((p) => !picked(p)).slice(0, MAP_PLACES - chosen.length)].sort((a, b) => b.n - a.n)
   const max = list[0].n
   const sel = list.filter(picked)
   // the view: the selection's bounds, padded, at least 18 degrees wide, at the map's 2.5:1
   let vb = [0, 0, 720, 288]
-  if (sel.length) {
-    const xs = sel.map(mapX)
-    const ys = sel.map(mapY)
+  // the frame covers every selected place, drawn or not
+  if (selectedAll.length) {
+    const xs = selectedAll.map(mapX)
+    const ys = selectedAll.map(mapY)
     let w = Math.max(Math.max(...xs) - Math.min(...xs) + 24, 36)
     let h = Math.max(Math.max(...ys) - Math.min(...ys) + 24, 14.4)
     if (w / h > 2.5) h = w / 2.5

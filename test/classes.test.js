@@ -290,7 +290,7 @@ test("the city filter takes real city names and nothing that could break SQL", (
   for (const city of ["O'Fallon", "a\\b", " Oslo", "x".repeat(65), "Oslo;DROP", "a\tb"]) assert.equal(f({ city }).city, undefined, city)
   const q = queries(7, null, config, Date.now(), { country: "NO", city: "Oslo" })
   assert.match(q.geo, /blob9 = 'Oslo'/)
-  assert.doesNotMatch(q.places, /blob9 = 'Oslo'|blob4 = 'NO'/, "the map's places skip the selection")
+  assert.doesNotMatch(q.places.slice(q.places.indexOf(" FROM ")), /blob9 = 'Oslo'|blob4 = 'NO'/, "the map's places don't filter on the selection (they only sort it first)")
 })
 
 test("resolving many aliases for many selected services stays cheap", async () => {
@@ -368,4 +368,29 @@ test("map places outside the filters add no host, country links drop the city, a
   const capped = render(build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }], places: many }, config), { days: 7, host: null, filters, config, generated: "x", land: LAND })
   assert.match(capped, /class="sel"/, "the selected place makes the map though it is the 301st")
   assert.equal((capped.match(/<circle cx/g) || []).length, 300)
+})
+
+test("a quiet selected city survives the SQL cap, the frame covers every selected place, and API places keep their own label", async () => {
+  const { LAND } = await import("../src/world.js")
+  const s = openStore()
+  const now = Date.parse("2026-10-06T12:30:00Z")
+  const h = Math.floor(now / 1000 / HOUR) * HOUR
+  const row = (city, country, lon, n) => ({ hour: h, host: "blog.example.com", path: "/", ua: chrome, country, status: "200", city, region: "", lat: "40.00", lon: String(lon), n })
+  s.replaceAE(h - HOUR, h + HOUR, [...Array.from({ length: 500 }, (_, i) => row(`C${i}`, "US", -100 + i * 0.01, 100)), row("Oslo", "NO", 10.74, 1)])
+  const rows = s.rows(7, null, config, now, { country: "NO", city: "Oslo" })
+  assert.equal(rows.places.length, 500)
+  assert.equal(rows.places[0].city, "Oslo", "the selection sorts first, inside the LIMIT")
+  const q = queries(7, null, config, now, { country: "NO", city: "Oslo" })
+  assert.match(q.places, /if\(blob4 = 'NO' AND blob9 = 'Oslo', 1, 0\) AS sel/)
+  assert.match(q.places, /ORDER BY sel DESC, n DESC/)
+  // 301 selected places: the quiet one far east still sets the frame
+  const places = [...Array.from({ length: 300 }, (_, i) => ({ host: "blog.example.com", country: "US", region: "", city: `C${i}`, lat: "40.00", lon: String(-170 + i * 0.01), n: 100 })), { host: "blog.example.com", country: "US", region: "", city: "Far", lat: "40.00", lon: "170", n: 1 }]
+  const html = render(build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }], places }, config), { days: 7, host: null, filters: { country: "US" }, config, generated: "x", land: LAND })
+  const [, , w] = /class="map" viewBox="([^"]+)"/.exec(html)[1].split(" ").map(Number)
+  assert.ok(w > 600, `the frame spans the far city (${w})`)
+  const two = build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }, { host: "app.example.net", status: "200", n: 1 }], places: [
+    { host: "blog.example.com", country: "US", region: "Region A", city: "Springfield", lat: "39.80", lon: "-89.64", n: 1 },
+    { host: "app.example.net", country: "US", region: "Region B", city: "Springfield", lat: "39.80", lon: "-89.64", n: 1 }
+  ] }, config)
+  assert.deepEqual(toJSON(two, config).hosts.map((x) => x.places[0][0]).sort(), ["Springfield, Region A, US", "Springfield, Region B, US"])
 })
