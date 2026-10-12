@@ -143,7 +143,8 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
             sinkuse: all(`SELECT strftime('%Y-%m-%d %H:00:00', hour, 'unixepoch') AS at, host, path, sink AS kind, sinkctx AS ctx, ip, asorg, country, ${n} ${where} AND sink LIKE 'use:%' GROUP BY at, host, path, kind, ctx, ip, asorg, country ORDER BY at DESC, host, path, kind, ctx, ip, asorg, country LIMIT ${LIMITS.canaries}`)
           }
           : {}),
-        hosts: db.prepare(`SELECT host, ${n} FROM hits WHERE hour >= ? AND hour < ? GROUP BY host ORDER BY n DESC, host LIMIT 200`).all(w.fromSeconds, w.toSeconds),
+        // traffic only: bait kept apart (source "sink") is no request of its own
+        hosts: db.prepare(`SELECT host, ${n} FROM hits WHERE hour >= ? AND hour < ? AND source != 'sink' GROUP BY host ORDER BY n DESC, host LIMIT 200`).all(w.fromSeconds, w.toSeconds),
         // AE's toDayOfWeek numbering: 1 = Monday ... 7 = Sunday (SQLite's %w is 0 = Sunday)
         heat: all(`SELECT ((CAST(strftime('%w', hour, 'unixepoch') AS INTEGER) + 6) % 7) + 1 AS dow, CAST(strftime('%H', hour, 'unixepoch') AS INTEGER) AS hr, ${n} ${where} GROUP BY dow, hr`)
       }

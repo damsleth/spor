@@ -280,3 +280,25 @@ test("a SELF_COUNTED host is outside the sinkhole: no token interception, no cha
   assert.equal(await (await tap.fetch(probe("/_internal/x"), env)).text(), "from the proxy")
   assert.equal(points.length, 0, "nothing recorded: the host's own Worker counts it")
 })
+
+test("a malformed SELF_COUNTED never breaks the origin", async () => {
+  globalThis.fetch = async () => new Response("origin")
+  for (const SELF_COUNTED of [true, "example.com", { a: 1 }, 7]) {
+    const { env } = sinkEnv({ SELF_COUNTED })
+    assert.equal(await (await tap.fetch(probe("/"), env)).text(), "origin", JSON.stringify(SELF_COUNTED))
+  }
+})
+
+test("ingest drops sinkhole fields, and the chips count bait kept apart as no traffic", async () => {
+  const { ingest } = await import("../src/server.js")
+  const s = openStore()
+  const now = Date.parse("2026-10-06T12:30:00Z")
+  const h = Math.floor(now / 1000 / HOUR) * HOUR
+  const point = { indexes: ["app.example.net"], blobs: ["/.env", "", "x", "", "200", "", "", "GET", "", "", "", "", "", "", "", "", "bait:env", "a|b|c|env"] }
+  const res = await ingest(new Request("http://spor/api/ingest", { method: "POST", headers: { authorization: "Bearer t" }, body: JSON.stringify(point) }), { token: "t", config, store: s })
+  assert.equal(res.status, 204)
+  assert.deepEqual(s.db.prepare("SELECT sink, sinkctx FROM hits").all().map((r) => ({ ...r })), [{ sink: "", sinkctx: "" }])
+  s.replaceAE(h - HOUR, h + HOUR, [{ hour: h, host: "app.example.net", path: "/.env", status: "200", sink: "bait:env", n: 1 }, { hour: h, host: "blog.example.com", path: "/", status: "200", n: 1 }])
+  const rows = s.rows(1, null, config, now)
+  assert.deepEqual(rows.hosts.map((r) => [r.host, r.n]).sort(), [["app.example.net", 1], ["blog.example.com", 1]])
+})

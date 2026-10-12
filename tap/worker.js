@@ -101,10 +101,13 @@ export async function visitorId(request, env, ip, now = Date.now()) {
 
 // sink: { kind, ctx } for a sinkhole event, which is recorded even for a SELF_COUNTED host: its own
 // tap never sees the bait
+// only a list counts: a malformed SELF_COUNTED must never throw in front of the origin
+const selfCounted = (env, host) => Array.isArray(env.SELF_COUNTED) && env.SELF_COUNTED.includes(host)
+
 export async function record(request, status, env, sink = null) {
   try {
     const host = new URL(request.url).hostname.replace(/\.$/, "")
-    if (!env.SPOR_ANALYTICS || (!sink && env.SELF_COUNTED?.includes(host))) return
+    if (!env.SPOR_ANALYTICS || (!sink && selfCounted(env, host))) return
     const ip = request.headers.get("cf-connecting-ip") || ""
     const visitor = await visitorId(request, env, ip)
     env.SPOR_ANALYTICS.writeDataPoint(dataPoint(request, status, { visitor, ip: env.RECORD_IP === true ? ip : "", sink: sink?.kind, sinkctx: sink?.ctx }))
@@ -163,7 +166,7 @@ async function baitResponse(request, env, path, response) {
   const kind = baitKind(path)
   if (!kind) return null
   const host = new URL(request.url).hostname.replace(/\.$/, "")
-  if (env.SELF_COUNTED?.includes(host)) return null
+  if (selfCounted(env, host)) return null
   const html = (response.headers.get("content-type") || "").includes("text/html")
   const empty = [403, 404, 410].includes(response.status) || (response.status === 200 && html && NEVER_HTML.includes(kind))
   if (!empty || !sinkable({ ua: request.headers.get("user-agent") || "", bot: String(request.cf?.verifiedBotCategory || "") })) return null
@@ -193,7 +196,7 @@ export default {
     } catch {
       // keep "/"
     }
-    const sinkhole = env.SINKHOLE === true && !env.SELF_COUNTED?.includes(host)
+    const sinkhole = env.SINKHOLE === true && !selfCounted(env, host)
     if (sinkhole) {
       try {
         const token = findToken(request)

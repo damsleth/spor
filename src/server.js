@@ -52,9 +52,6 @@ function clean({ host, path, referer, ua, country, status, bot, origin, method, 
   }
 }
 
-// a canary context ("host|ip|when|kind") without its IP
-const redactIp = (ctx) => (ctx ? ctx.split("|").map((part, i) => (i === 1 ? "" : part)).join("|") : "")
-
 // the tap's Analytics Engine data point -> store fields
 export function fromDataPoint(point) {
   if (!point || !Array.isArray(point.indexes) || !Array.isArray(point.blobs)) return null
@@ -217,8 +214,9 @@ export async function ingest(request, { token, config, store }) {
   const points = list.map(fromDataPoint)
   if (points.some((p) => !p || !config.local.has(p.host))) return text(400, "every point needs a host listed in config.local")
   const now = Date.now() / 1000
-  // the sender's visitor hash is kept; its IP only with recordIp
-  for (const p of points) store.addLocal(config.recordIp ? p : { ...p, ip: "", sinkctx: redactIp(p.sinkctx) }, "ingest", now)
+  // the sender's visitor hash is kept; its IP only with recordIp. Sinkhole events come from AE alone
+  // (only the tap makes them), so an ingested point never carries one and can't double one
+  for (const p of points) store.addLocal({ ...p, ip: config.recordIp ? p.ip : "", sink: "", sinkctx: "" }, "ingest", now)
   return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } })
 }
 
