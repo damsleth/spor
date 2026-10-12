@@ -247,7 +247,7 @@ test("a header of repeated prefixes is scanned in linear time and holds no token
   assert.equal(findToken(new Request("https://e.com/", { headers: { "x-api-key": `${"spk_live_x ".repeat(3)}${good}` } })), good, "a later run can still be the token")
 })
 
-test("a stalled webhook locks a key's alerts for a minute, not forever", async () => {
+test("a stalled webhook locks a key's alerts for a minute, not forever", async (t) => {
   const sent = []
   const { env } = sinkEnv({ CANARY_WEBHOOK: "https://ntfy.example/c" })
   globalThis.fetch = async (url, init) => {
@@ -263,6 +263,8 @@ test("a stalled webhook locks a key's alerts for a minute, not forever", async (
   const until = async (ok) => { for (let i = 0; i < 200 && !ok(); i++) await new Promise((r) => setTimeout(r, 5)) }
   // AbortSignal.timeout doesn't hold the event loop open on Node 22: this does, until the test ends
   const awake = setInterval(() => {}, 1000)
+  // cleared however the test ends, or a failed assertion would keep the process alive
+  t.after(() => clearInterval(awake))
   await use()
   await until(() => sent.length === 1)
   await use()
@@ -274,7 +276,6 @@ test("a stalled webhook locks a key's alerts for a minute, not forever", async (
   await until(() => sent.length === 2)
   assert.equal(sent.length, 2, "after the call timed out, the next use alerts again")
   await Promise.all(waits)
-  clearInterval(awake)
 })
 
 test("a SELF_COUNTED host is outside the sinkhole: no token interception, no challenge, no record", async () => {
