@@ -112,5 +112,6 @@ curl -X POST https://stats.example.com/api/ingest -H "Authorization: Bearer $ING
 The body is one data point or an array of up to 100, at most 64 KB. Every host must be in
 `local`. The server answers 204, or 400, 401 or 413. `dataPoint()` in `tap/worker.js`
 produces exactly this shape. Points from before the six newer blobs (city through ip) still
-work; the missing ones are empty. The IP blob is dropped unless `recordIp` is on, and the
-sinkhole blobs always are: sinkhole events come from AE alone.
+work; the missing ones are empty. The IP blob is dropped unless `recordIp` is on. Sinkhole
+events come from AE alone: an ingested canary use or challenge is skipped, and ingested bait
+counts as its request without the sinkhole blobs.

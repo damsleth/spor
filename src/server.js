@@ -215,8 +215,12 @@ export async function ingest(request, { token, config, store }) {
   if (points.some((p) => !p || !config.local.has(p.host))) return text(400, "every point needs a host listed in config.local")
   const now = Date.now() / 1000
   // the sender's visitor hash is kept; its IP only with recordIp. Sinkhole events come from AE alone
-  // (only the tap makes them), so an ingested point never carries one and can't double one
-  for (const p of points) store.addLocal({ ...p, ip: config.recordIp ? p.ip : "", sink: "", sinkctx: "" }, "ingest", now)
+  // (only the tap makes them): a canary use or challenge is skipped, since the tap answered it and
+  // AE has it; bait counts as the request it was, without its sinkhole fields
+  for (const p of points) {
+    if (/^(use:|challenge$)/.test(p.sink)) continue
+    store.addLocal({ ...p, ip: config.recordIp ? p.ip : "", sink: "", sinkctx: "" }, "ingest", now)
+  }
   return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } })
 }
 

@@ -294,11 +294,25 @@ test("ingest drops sinkhole fields, and the chips count bait kept apart as no tr
   const s = openStore()
   const now = Date.parse("2026-10-06T12:30:00Z")
   const h = Math.floor(now / 1000 / HOUR) * HOUR
-  const point = { indexes: ["app.example.net"], blobs: ["/.env", "", "x", "", "200", "", "", "GET", "", "", "", "", "", "", "", "", "bait:env", "a|b|c|env"] }
-  const res = await ingest(new Request("http://spor/api/ingest", { method: "POST", headers: { authorization: "Bearer t" }, body: JSON.stringify(point) }), { token: "t", config, store: s })
-  assert.equal(res.status, 204)
-  assert.deepEqual(s.db.prepare("SELECT sink, sinkctx FROM hits").all().map((r) => ({ ...r })), [{ sink: "", sinkctx: "" }])
-  s.replaceAE(h - HOUR, h + HOUR, [{ hour: h, host: "app.example.net", path: "/.env", status: "200", sink: "bait:env", n: 1 }, { hour: h, host: "blog.example.com", path: "/", status: "200", n: 1 }])
+  const blobs = (path, sink) => ["/", "", "x", "", "200", "", "", "GET", "", "", "", "", "", "", "", "", sink, "a|b|c|env"].map((b, i) => (i === 0 ? path : b))
+  const points = [{ indexes: ["app.example.net"], blobs: blobs("/.env", "bait:env") }, { indexes: ["app.example.net"], blobs: blobs("/_internal/x", "use:env") }, { indexes: ["app.example.net"], blobs: blobs("/_internal/y", "challenge") }]
+  // ingest stamps points with the clock: the fixture's hour, so the cutover lands before AE's rows
+  const realNow = Date.now
+  Date.now = () => now
+  try {
+    const res = await ingest(new Request("http://spor/api/ingest", { method: "POST", headers: { authorization: "Bearer t" }, body: JSON.stringify(points) }), { token: "t", config, store: s })
+    assert.equal(res.status, 204)
+  } finally {
+    Date.now = realNow
+  }
+  assert.deepEqual(s.db.prepare("SELECT path, sink, sinkctx FROM hits").all().map((r) => ({ ...r })), [{ path: "/.env", sink: "", sinkctx: "" }], "bait counts as its request; uses and challenges are AE's")
+  s.replaceAE(h - HOUR, h + HOUR, [
+    { hour: h, host: "app.example.net", path: "/.env", status: "200", sink: "bait:env", n: 1 },
+    { hour: h, host: "app.example.net", path: "/_internal/x", status: "403", sink: "use:env", n: 1 },
+    { hour: h, host: "app.example.net", path: "/_internal/y", status: "401", sink: "challenge", n: 1 },
+    { hour: h, host: "blog.example.com", path: "/", status: "200", n: 1 }
+  ])
+  assert.equal(s.db.prepare("SELECT COUNT(*) AS c FROM hits WHERE source = 'sink'").get().c, 1, "the bait is kept apart")
   const rows = s.rows(1, null, config, now)
-  assert.deepEqual(rows.hosts.map((r) => [r.host, r.n]).sort(), [["app.example.net", 1], ["blog.example.com", 1]])
+  assert.deepEqual(rows.hosts.map((r) => [r.host, r.n]).sort(), [["app.example.net", 3], ["blog.example.com", 1]], "three requests: the ingested probe, the use, the challenge")
 })
