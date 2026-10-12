@@ -359,6 +359,8 @@ export function queries(days, host, config, now = Date.now(), filters = {}) {
     networks: `SELECT index1 AS host, blob11 AS asn, blob12 AS asorg, ${n} ${from} AND blob11 != '' GROUP BY host, asn, asorg ORDER BY n DESC, host, asn, asorg LIMIT ${LIMITS.networks} FORMAT JSON`,
     agents: `SELECT index1 AS host, blob3 AS ua, blob6 AS bot, blob12 AS asorg, ${n} ${from} AND NOT ${human} GROUP BY host, ua, bot, asorg ORDER BY n DESC, host, ua, bot, asorg LIMIT ${LIMITS.agents} FORMAT JSON`,
     visitors: `SELECT index1 AS host, toStartOfInterval(timestamp, INTERVAL '1' DAY) AS day, count(DISTINCT blob13) AS v ${from} AND blob13 != ''${people} GROUP BY host, day FORMAT JSON`,
+    // the chart's: distinct visitors per hour (or 6-hour) bucket; the per-day counts stay the total
+    visitorsHours: `SELECT index1 AS host, toStartOfInterval(timestamp, INTERVAL '${w.step}' HOUR) AS day, count(DISTINCT blob13) AS v ${from} AND blob13 != ''${people} GROUP BY host, day FORMAT JSON`,
     ips: `SELECT index1 AS host, blob14 AS ip, blob12 AS asorg, blob4 AS country, ${n} ${from} AND blob14 != '' GROUP BY host, ip, asorg, country ORDER BY n DESC, host, ip, asorg, country LIMIT ${LIMITS.ips} FORMAT JSON`,
     // the sinkhole view: bait served by kind, and every canary use with the probe it came from
     ...(f.view === "sink"
@@ -415,7 +417,7 @@ export function agentName(row, id = classOf(row)) {
 
 // filtered: a class filter is on, so every detail row already belongs to the class asked for and
 // the page tables show its fetches, not only people's
-export function build({ totals = [], daily = [], ok = [], paths = [], origins = [], geo = [], places = null, networks = [], agents = [], visitors = [], ips = [], heat = [], hosts: seen = [], sinkkinds = [], sinkuse = [] }, config, { hourly = false, filtered = false } = {}) {
+export function build({ totals = [], daily = [], ok = [], paths = [], origins = [], geo = [], places = null, networks = [], agents = [], visitors = [], visitorsHours = [], ips = [], heat = [], hosts: seen = [], sinkkinds = [], sinkuse = [] }, config, { hourly = false, filtered = false } = {}) {
   const classify = classifier()
   const hosts = new Map()
   const get = (raw) => {
@@ -427,6 +429,8 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
         cities: new Map(), networks: new Map(), classes: new Map(), agents: new Map(), ips: new Map(), names: new Map(),
         // unique visitors per day: "YYYY-MM-DD" -> visitors
         visitorsDaily: new Map(),
+        // unique visitors per hour bucket: "YYYY-MM-DD HH" -> visitors, for the chart
+        visitorsHourly: new Map(),
         // map points: "lat,lon|country|city" -> { lat, lon, n, label, country }
         places: new Map()
       })
@@ -507,6 +511,7 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
     h.visitors += num(r.v)
     add(h.visitorsDaily, String(r.day).slice(0, 10), num(r.v))
   }
+  for (const r of visitorsHours) add(get(r.host).visitorsHourly, String(r.day).slice(0, 13), num(r.v))
   for (const r of ips) {
     const h = get(r.host)
     add(h.ips, r.ip, num(r.n))
@@ -558,7 +563,7 @@ export function toJSON(model, config, { days, host, filters = {} } = {}) {
     ...(filters.view === "sink" ? { sink: { bait: [...(model.sinkkinds || [])].sort((a, b) => b[1] - a[1]), canaries: model.canaries || [] } } : {}),
     hosts: model.map((h) => ({
       host: h.host, service: serviceOf(h.host, config), description: config.services[h.host] || config.services[serviceOf(h.host, config)] || null,
-      requests: h.requests, ok2xx: h.ok2xx, pageviews: h.pageviews, bots: h.bots, visitors: h.visitors, visitorsDaily: [...h.visitorsDaily.entries()].sort(),
+      requests: h.requests, ok2xx: h.ok2xx, pageviews: h.pageviews, bots: h.bots, visitors: h.visitors, visitorsDaily: [...h.visitorsDaily.entries()].sort(), visitorsHourly: [...h.visitorsHourly.entries()].sort(),
       status: top(h.status), daily: perDay(h.daily), hours: [...h.daily.entries()].sort(), pages: top(h.pages), referers: top(h.referers),
       countries: top(h.countries), browsers: top(h.browsers), probes: top(h.probes), targets: top(h.targets), origins: top(h.origins),
       cities: top(h.cities), networks: top(h.networks).map(([asn, n]) => [asn, h.names.get(`as:${asn}`) || "", n]),
@@ -920,12 +925,12 @@ function combine(model, config, host = null) {
   const multi = services.size > 1
   const c = { services, multi, names: new Map(), hostnames: new Map(), places: model.places || new Map() }
   for (const k of ["requests", "pageviews", "visitors", "ok2xx", "bots"]) c[k] = model.reduce((t, h) => t + h[k], 0)
-  for (const k of ["status", "daily", "visitorsDaily", "referers", "countries", "cities", "browsers", "networks", "classes", "agents", "ips", "origins", "pages", "probes", "targets"]) c[k] = new Map()
+  for (const k of ["status", "daily", "visitorsDaily", "visitorsHourly", "referers", "countries", "cities", "browsers", "networks", "classes", "agents", "ips", "origins", "pages", "probes", "targets"]) c[k] = new Map()
   for (const h of model) {
     const svc = unitOf(h.host)
     // a page or probe key is "<unit>\t<path>" when several units are in view
     const scoped = (p) => (multi ? `${svc}\t${p}` : p)
-    for (const k of ["status", "daily", "visitorsDaily", "referers", "countries", "cities", "browsers", "networks", "classes", "agents", "ips", "origins", "targets"]) merge(c[k], h[k])
+    for (const k of ["status", "daily", "visitorsDaily", "visitorsHourly", "referers", "countries", "cities", "browsers", "networks", "classes", "agents", "ips", "origins", "targets"]) merge(c[k], h[k])
     merge(c.pages, h.pages, scoped)
     merge(c.probes, h.probes, scoped)
     for (const [k, v] of h.names) c.names.set(k, v)
@@ -954,7 +959,7 @@ function combinedSection(c, window, dayWindow, config, capped, state) {
 ${only ? `<header><h2>${escapeHtml(unitLabel(only))}${desc ? ` <span class="desc">${escapeHtml(desc)}</span>` : ""}</h2></header>` : ""}
 <p class="summary"><b>${fmt(c.requests)}</b> requests · <b>${fmt(c.pageviews)}</b> human page views${c.visitors ? ` · <b>${fmt(c.visitors)}</b> unique visitors` : ""} · ${shareText(share, capped)} of 2xx from bots${capped ? " (upper bound)" : ""}</p>
 ${chartRow("Requests", c.requests, lineChart(c.daily, window, "requests", state.day ? null : (day) => hrefFor(state, { day })), window.length === dayWindow.length * 24 ? "per hour" : `per ${(dayWindow.length * 24) / window.length} hours`)}
-${dayWindow.length > 1 ? chartRow("Unique visitors", c.visitors, lineChart(c.visitorsDaily, dayWindow, "visitors", (day) => hrefFor(state, { day })), "per day") : ""}
+${chartRow("Unique visitors", c.visitors, lineChart(c.visitorsHourly, window, "visitors", state.day ? null : (day) => hrefFor(state, { day })), window.length === dayWindow.length * 24 ? "per hour" : `per ${(dayWindow.length * 24) / window.length} hours`)}
 ${statusPie(c.status)}
 <div class="grid">
 ${c.multi ? table("services", services, { label: (k) => config.services[k] ? `${k} · ${config.services[k]}` : unitLabel(k), link: (k) => hrefFor(state, { host: k }) }) : ""}${named ? table("host names", c.hostnames, { link: (k) => hrefFor(state, { host: exact(k) }) }) : ""}${table("pages", c.pages, scoped)}${table("referers", c.referers)}${table("countries", c.countries, { link: (k) => filterLink({ ...state, city: null }, "country", k) })}${table("cities", c.cities)}${table("browsers", c.browsers)}${table("networks", c.networks, { label: (asn) => `AS${asn} ${c.names.get(`as:${asn}`) || ""}`.trim(), ...by("asn") })}${table("bots and AI", c.classes, { label: classLabel, ...by("class") })}${table("agents", c.agents, { label: (k) => k.slice(tab(k) + 1), link: (k) => filterLink(state, "class", k.slice(0, tab(k))) })}${table("IP addresses", c.ips, { label: (ip) => `${ip} ${c.names.get(`ip:${ip}`) || ""}`.trim(), ...by("ip") })}${table("404s and probes", c.probes, scoped)}${table("proxy targets", c.targets)}${table("proxy callers (Origin)", c.origins)}

@@ -422,3 +422,19 @@ test("the map's script is the only one, allowed by its hash, and only on a page 
   assert.ok(withMap.includes(`<script>${MAP_SCRIPT}</script>`), "the exact text the hash allows")
   assert.doesNotMatch(render(build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }] }, config), { days: 7, host: null, config, generated: "x" }), /<script/)
 })
+
+test("the visitors chart counts distinct visitors per hour, and the total stays per day", () => {
+  const s = openStore()
+  const now = Date.parse("2026-10-06T12:30:00Z")
+  const h = Math.floor(now / 1000 / HOUR) * HOUR
+  const v = (hour, visitor) => ({ hour, host: "blog.example.com", path: "/", ua: chrome, status: "200", visitor, n: 1 })
+  // one visitor in two hours, a second in one: 2 that day, 1 and 2 by the hour
+  s.replaceAE(h - 2 * HOUR, h + HOUR, [v(h - HOUR, "aaaaaaaaaaaaaaaa"), v(h, "aaaaaaaaaaaaaaaa"), v(h, "bbbbbbbbbbbbbbbb")])
+  const r = s.rows(1, null, config, now)
+  const json = toJSON(build(r, config), config).hosts[0]
+  assert.equal(json.visitors, 2)
+  assert.deepEqual(json.visitorsHourly, [["2026-10-06 11", 1], ["2026-10-06 12", 2]])
+  assert.match(queries(31, null, config, now).visitorsHours, /INTERVAL '6' HOUR/)
+  const html = render(build(r, config), { days: 1, host: null, config, generated: "x", today: "2026-10-06" })
+  assert.match(html, /aria-label="Tue 10-06 12:00 UTC: 2 visitors"/)
+})

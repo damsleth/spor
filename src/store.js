@@ -147,6 +147,7 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
         networks: all(`SELECT host, asn, asorg, ${n} ${where} AND asn != '' GROUP BY host, asn, asorg ORDER BY n DESC, host, asn, asorg LIMIT ${LIMITS.networks}`),
         agents: all(`SELECT host, ua, bot, asorg, ${n} ${where} AND NOT ${human} GROUP BY host, ua, bot, asorg ORDER BY n DESC, host, ua, bot, asorg LIMIT ${LIMITS.agents}`),
         visitors: all(`SELECT host, strftime('%Y-%m-%d', hour, 'unixepoch') AS day, count(DISTINCT visitor) AS v ${where} AND visitor != ''${people} GROUP BY host, day`),
+        visitorsHours: all(`SELECT host, strftime('%Y-%m-%d %H:00:00', (hour / ${bucket}) * ${bucket}, 'unixepoch') AS day, count(DISTINCT visitor) AS v ${where} AND visitor != ''${people} GROUP BY host, day`),
         ips: all(`SELECT host, ip, asorg, country, ${n} ${where} AND ip != '' GROUP BY host, ip, asorg, country ORDER BY n DESC, host, ip, asorg, country LIMIT ${LIMITS.ips}`),
         ...(f.view === "sink"
           ? {
