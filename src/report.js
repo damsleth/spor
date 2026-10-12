@@ -495,8 +495,11 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
   model.sinkkinds = new Map()
   for (const r of sinkkinds) model.sinkkinds.set(String(r.kind), (model.sinkkinds.get(String(r.kind)) || 0) + num(r.n))
   model.canaries = sinkuse.map((r) => {
-    const [host, ip, at, kind] = String(r.ctx || "").split("|")
-    return { at: String(r.at).slice(0, 16), host: normalizeHost(r.host), path: r.path, kind: String(r.kind).replace(/^use:/, ""), ip: r.ip || "", asorg: r.asorg || "", country: r.country || "", n: num(r.n), from: host ? { host, ip, at, kind } : null }
+    // the probe the key came from: "<host>|<ip>|<when>|<kind>", or empty when it couldn't be read
+    const parts = String(r.ctx || "").split("|")
+    const [host, ip, at, kind] = parts
+    const from = parts.length === 4 && HOSTNAME.test(normalizeHost(host)) && BAIT_KINDS.includes(kind) ? { host: normalizeHost(host), ip, at, kind } : null
+    return { at: String(r.at).slice(0, 16), host: normalizeHost(r.host), path: r.path, kind: String(r.kind).replace(/^use:/, ""), ip: r.ip || "", asorg: r.asorg || "", country: r.country || "", n: num(r.n), from }
   })
   // every host in the window, for the service chips (a Map: normalized host -> requests)
   model.hosts = new Map()
@@ -784,7 +787,7 @@ function sinkSection(model, state) {
     const href = filterLink(state, "ip", ip)
     return href ? `<a href="${href}">${escapeHtml(ip)}</a>` : escapeHtml(ip || "?")
   }
-  const rows = uses.map((u) => `<tr><td>${escapeHtml(u.at)}</td><td>${ipCell(u.ip)} <span class="muted">${escapeHtml([u.asorg, u.country].filter(Boolean).join(" · "))}</span></td><td>${escapeHtml(u.host + u.path)}</td><td>${u.from ? `${escapeHtml(u.from.kind)} bait on ${escapeHtml(u.from.host)}, to ${ipCell(u.from.ip)} at ${escapeHtml(u.from.at)}` : "unknown bait"}</td><td class="n">${u.n}</td></tr>`).join("")
+  const rows = uses.map((u) => `<tr><td>${escapeHtml(u.at)}</td><td>${ipCell(u.ip)} <span class="muted">${escapeHtml([u.asorg, u.country].filter(Boolean).join(" · "))}</span></td><td>${escapeHtml(u.host + u.path)}</td><td>${u.from ? `${escapeHtml(u.from.kind)} bait on ${escapeHtml(u.from.host)}${u.from.ip ? `, to ${ipCell(u.from.ip)}` : ""} at ${escapeHtml(u.from.at)}` : "unknown bait"}</td><td class="n">${u.n}</td></tr>`).join("")
   const kinds = new Map([...(model.sinkkinds || [])].map(([k, n]) => [k, n]))
   const label = (k) => (k.startsWith("bait:") ? `${k.slice(5)} bait served` : k.startsWith("use:") ? `${k.slice(4)} key used` : k === "challenge" ? "/_internal/ without a key" : k)
   return `<section class="card"><header><h2>Sinkhole <span class="desc">Probes for secrets get bait with canary keys; a key in use points back at the probe that took it.</span></h2></header>

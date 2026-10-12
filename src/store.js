@@ -88,9 +88,9 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
         deleteAE.run(from, to)
         for (const r of rows) {
           const since = cutover(r.host)
-          // a local host's sinkhole rows stay: the tap answered those requests, so nginx never saw
-          // a canary use (bait it did see, as the origin's 404)
-          if (since !== null && r.hour >= since && !r.sink) continue
+          // a local host's canary uses and challenges stay: the tap answered those, so nginx never
+          // saw them. Bait it did see, as the origin's answer, and counts it already
+          if (since !== null && r.hour >= since && !/^(use:|challenge$)/.test(r.sink || "")) continue
           if (r.hour < from || r.hour >= to) continue
           insert(r.hour, r, "ae", Number(r.n) || 0)
         }

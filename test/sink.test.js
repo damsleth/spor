@@ -68,7 +68,7 @@ test("every bait carries the token and points back at the probed host", () => {
 
 const sinkEnv = (extra = {}) => {
   const points = []
-  return { points, env: { SINKHOLE: true, CANARY_SECRET: "s3cret", SPOR_ANALYTICS: { writeDataPoint: (p) => points.push(p) }, ...extra } }
+  return { points, env: { SINKHOLE: true, RECORD_IP: true, CANARY_SECRET: "s3cret", SPOR_ANALYTICS: { writeDataPoint: (p) => points.push(p) }, ...extra } }
 }
 const probe = (path, headers = {}) => new Request(`https://example.com${path}`, { headers: { "user-agent": "zgrab/0.x", "cf-connecting-ip": "198.51.100.9", ...headers } })
 
@@ -84,8 +84,11 @@ test("the tap baits a probe only when the origin has nothing there", async () =>
   assert.equal(points[0].blobs[4], "200")
 
   globalThis.fetch = async () => new Response("<!doctype html>app", { status: 200, headers: { "content-type": "text/html" } })
-  assert.match(await (await tap.fetch(probe("/info.php"), env)).text(), /phpinfo/, "an SPA's HTML fallback is no file")
+  assert.match(await (await tap.fetch(probe("/.git/config"), env)).text(), /\[remote "origin"\]/, "an SPA's HTML fallback is no git config")
+  assert.match(await (await tap.fetch(probe("/login.php"), env)).text(), /^<!doctype html>app/, "a real PHP page stays")
   assert.match(await (await tap.fetch(probe("/userfiles"), env)).text(), /^<!doctype html>app/, "a real /userfiles page stays")
+  globalThis.fetch = async () => new Response("nf", { status: 404 })
+  assert.match(await (await tap.fetch(probe("/info.php"), env)).text(), /phpinfo/, "a missing PHP page gets bait")
 
   globalThis.fetch = async () => new Response("REAL=1", { status: 200, headers: { "content-type": "text/plain" } })
   assert.equal(await (await tap.fetch(probe("/.env"), env)).text(), "REAL=1", "a real file is never hidden")
@@ -93,8 +96,7 @@ test("the tap baits a probe only when the origin has nothing there", async () =>
   globalThis.fetch = async () => new Response("nope", { status: 404 })
   assert.equal((await tap.fetch(probe("/.env", { "user-agent": "Mozilla/5.0 (compatible; Claude-User/1.0)" }), env)).status, 404, "an assistant gets the origin's answer")
   assert.equal((await tap.fetch(probe("/.env"), { ...env, SINKHOLE: "true" })).status, 404, "only the boolean true turns it on")
-  assert.equal((await tap.fetch(probe("/.env"), { ...env, SELF_COUNTED: ["example.com"] })).status, 200)
-  assert.equal(points.at(-1).blobs[16], "bait:env", "bait on a SELF_COUNTED host is still recorded")
+  assert.equal((await tap.fetch(probe("/.env"), { ...env, SELF_COUNTED: ["example.com"] })).status, 404, "a host that counts itself gets no bait: it already counted the 404")
 })
 
 test("a used canary key is recorded with its probe, answered 403, and announced once", async () => {
@@ -160,4 +162,69 @@ test("the store keeps a local host's sinkhole rows after its cutover", () => {
     { hour: h, host: "app.example.net", path: "/_internal/x", status: "403", sink: "use:env", sinkctx: "a|b|c|env", n: 1 }
   ])
   assert.deepEqual(s.db.prepare("SELECT source, sink, n FROM hits ORDER BY source").all().map((r) => ({ ...r })), [{ source: "ae", sink: "use:env", n: 1 }, { source: "nginx", sink: "", n: 1 }])
+})
+
+test("without RECORD_IP no IP reaches a token, a record or an alert", async () => {
+  const sent = []
+  const { points, env } = sinkEnv({ RECORD_IP: false, CANARY_WEBHOOK: "https://ntfy.example/c" })
+  globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith("https://ntfy.example")) sent.push(init)
+    return new Response("nf", { status: 404 })
+  }
+  const body = await (await tap.fetch(probe("/.env"), env)).text()
+  const token = /spk_live_[A-Za-z0-9_-]+/.exec(body)[0]
+  assert.equal((await readToken("s3cret", token)).ip, "")
+  const old = await makeToken("s3cret", { host: "example.com", ip: "198.51.100.9", kind: "env" })
+  await tap.fetch(probe("/_internal/x", { authorization: `Bearer ${old}`, "cf-connecting-ip": "192.0.2.50" }), env)
+  assert.doesNotMatch(JSON.stringify(points), /198\.51\.100\.9|192\.0\.2\.50/)
+  assert.doesNotMatch(sent[0].body, /198\.51|192\.0\.2/)
+})
+
+test("a failed alert is retried on the next use instead of going quiet for an hour", async () => {
+  const sent = []
+  let up = false
+  const { env } = sinkEnv({ CANARY_WEBHOOK: "https://ntfy.example/c" })
+  globalThis.fetch = async (url) => {
+    if (String(url).startsWith("https://ntfy.example")) {
+      sent.push(up)
+      if (!up) return new Response("down", { status: 503 })
+    }
+    return new Response("ok")
+  }
+  const token = await makeToken("s3cret", { host: "example.com", ip: "198.51.100.9", kind: "env" })
+  const use = () => tap.fetch(probe("/_internal/x", { authorization: `Bearer ${token}` }), env)
+  await use()
+  up = true
+  await use()
+  await use()
+  assert.deepEqual(sent, [false, true], "down, then delivered, then quiet")
+})
+
+test("tokens for the longest host names and IPv6 addresses survive the trip", async () => {
+  const host = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(57)}.example`.slice(0, 253)
+  const ip = "2001:0db8:85a3:0000:0000:8a2e:0370:7334"
+  const token = await makeToken("s3cret", { host, ip, kind: "docker" })
+  const found = findToken(new Request(`https://e.com/x?k=${token}`))
+  assert.equal(found, token)
+  assert.equal((await readToken("s3cret", found)).host, host)
+  assert.equal(findToken(new Request(`https://e.com/x?k=${token}${"x".repeat(700)}`)), "", "an overlong run is not a token")
+})
+
+test("an unreadable key shows as unknown bait, not a made-up probe", () => {
+  const model = build({ sinkuse: [{ at: "2030-01-02 03:00:00", host: "blog.example.com", path: "/_internal/x", kind: "use:unknown", ctx: "", ip: "192.0.2.50", asorg: "", country: "", n: 1 }, { at: "2030-01-02 03:00:00", host: "blog.example.com", path: "/_internal/y", kind: "use:env", ctx: "unknown", ip: "192.0.2.51", asorg: "", country: "", n: 1 }] }, config)
+  assert.deepEqual(model.canaries.map((c) => c.from), [null, null])
+  const html = render(model, { days: 7, host: null, filters: { view: "sink" }, config, generated: "x" })
+  assert.doesNotMatch(html, /undefined/)
+  assert.equal((html.match(/unknown bait/g) || []).length, 2)
+})
+
+test("the store keeps a local host's canary uses but not its bait, which nginx already counted", () => {
+  const s = openStore()
+  const h = Math.floor(Date.parse("2026-10-06T12:00:00Z") / 1000 / HOUR) * HOUR
+  s.addLocal({ host: "app.example.net", path: "/.env", status: "404" }, "nginx", h + 10)
+  s.replaceAE(h - HOUR, h + HOUR, [
+    { hour: h, host: "app.example.net", path: "/.env", status: "200", sink: "bait:env", n: 1 },
+    { hour: h, host: "app.example.net", path: "/_internal/x", status: "401", sink: "challenge", n: 1 }
+  ])
+  assert.deepEqual(s.db.prepare("SELECT source, sink, status FROM hits ORDER BY source, sink").all().map((r) => ({ ...r })), [{ source: "ae", sink: "challenge", status: "401" }, { source: "nginx", sink: "", status: "404" }])
 })

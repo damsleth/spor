@@ -8,7 +8,8 @@
 // The bait points at /_internal/ on the probed host: requests there without a token get a 401
 // challenge, so git and HTTP clients send the credentials they found.
 
-export const TOKEN = /spk_live_[A-Za-z0-9_-]{20,400}/
+// long enough for a 253-character host and an IPv6 address; a longer run is not a token of ours
+export const TOKEN = /spk_live_[A-Za-z0-9_-]{20,600}(?![A-Za-z0-9_-])/
 export const INTERNAL = "/_internal/"
 
 const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")

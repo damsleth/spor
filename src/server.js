@@ -48,9 +48,12 @@ function clean({ host, path, referer, ua, country, status, bot, origin, method, 
     // coordinates as the tap writes them: text with 2 decimals
     lat: COORD.test(s(lat, 12)) ? Number(lat).toFixed(2) : "", lon: COORD.test(s(lon, 12)) ? Number(lon).toFixed(2) : "",
     // the tap's sinkhole marks: "bait:<kind>", "use:<kind>" or "challenge", and the probe a key came from
-    sink: /^((bait|use):[a-z]+|challenge)$/.test(s(sink, 24)) ? s(sink, 24) : "", sinkctx: s(sinkctx, 200)
+    sink: /^((bait|use):[a-z]+|challenge)$/.test(s(sink, 24)) ? s(sink, 24) : "", sinkctx: s(sinkctx, 400)
   }
 }
+
+// a canary context ("host|ip|when|kind") without its IP
+const redactIp = (ctx) => (ctx ? ctx.split("|").map((part, i) => (i === 1 ? "" : part)).join("|") : "")
 
 // the tap's Analytics Engine data point -> store fields
 export function fromDataPoint(point) {
@@ -215,7 +218,7 @@ export async function ingest(request, { token, config, store }) {
   if (points.some((p) => !p || !config.local.has(p.host))) return text(400, "every point needs a host listed in config.local")
   const now = Date.now() / 1000
   // the sender's visitor hash is kept; its IP only with recordIp
-  for (const p of points) store.addLocal(config.recordIp ? p : { ...p, ip: "" }, "ingest", now)
+  for (const p of points) store.addLocal(config.recordIp ? p : { ...p, ip: "", sinkctx: redactIp(p.sinkctx) }, "ingest", now)
   return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } })
 }
 

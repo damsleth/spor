@@ -55,7 +55,7 @@ export function dataPoint(request, status, { visitor = "", ip = "", sink = "", s
       coord(cf.latitude),
       coord(cf.longitude),
       sink,
-      sinkctx.slice(0, 200)
+      sinkctx.slice(0, 400)
     ],
     doubles: [1]
   }
@@ -116,35 +116,53 @@ export async function record(request, status, env, sink = null) {
 // A canary token in use: record it with the probe it came from, and announce it once an hour per
 // token (CANARY_WEBHOOK, an ntfy topic URL say, with CANARY_WEBHOOK_TOKEN as its Bearer token)
 const announced = new Map()
+// An IP appears in the context and the alert only with RECORD_IP, like everywhere else; a token
+// minted while it was on still carries one, which is dropped here when it is off.
 async function canaryUsed(request, env, token, status) {
+  const ips = env.RECORD_IP === true
   const found = await readToken(env.CANARY_SECRET, token)
-  const ctx = found ? `${found.host}|${found.ip}|${found.at}|${found.kind}` : "unknown"
+  const baitIp = ips && found ? found.ip : ""
+  // context: "<bait host>|<bait ip>|<when>|<kind>", or empty for a token this secret can't read
+  const ctx = found ? `${found.host}|${baitIp}|${found.at}|${found.kind}` : ""
   await record(request, status, env, { kind: `use:${found?.kind || "unknown"}`, ctx })
   const now = Date.now()
-  if (!env.CANARY_WEBHOOK || now - (announced.get(token) || 0) < 3600000) return
-  announced.set(token, now)
+  const last = announced.get(token)
+  if (!env.CANARY_WEBHOOK || last === "sending" || now - (last || 0) < 3600000) return
+  announced.set(token, "sending")
   if (announced.size > 1000) announced.clear()
   const url = new URL(request.url)
   const cf = request.cf || {}
-  const who = [request.headers.get("cf-connecting-ip"), cf.asOrganization, cf.country].filter(Boolean).join(", ")
-  const from = found ? `the ${found.kind} bait on ${found.host}, given to ${found.ip} at ${found.at} UTC` : "an unknown bait"
-  await fetch(env.CANARY_WEBHOOK, {
-    method: "POST",
-    headers: { title: "spor canary used", tags: "rotating_light", ...(env.CANARY_WEBHOOK_TOKEN ? { authorization: `Bearer ${env.CANARY_WEBHOOK_TOKEN}` } : {}) },
-    body: `A key from ${from} was used by ${who || "an unknown client"} on ${url.hostname}${url.pathname.slice(0, 64)}`
-  })
+  const who = [ips ? request.headers.get("cf-connecting-ip") : "", cf.asOrganization, cf.country].filter(Boolean).join(", ")
+  const from = found ? `the ${found.kind} bait on ${found.host}, given${baitIp ? ` to ${baitIp}` : ""} at ${found.at} UTC` : "an unknown bait"
+  try {
+    const res = await fetch(env.CANARY_WEBHOOK, {
+      method: "POST",
+      headers: { title: "spor canary used", tags: "rotating_light", ...(env.CANARY_WEBHOOK_TOKEN ? { authorization: `Bearer ${env.CANARY_WEBHOOK_TOKEN}` } : {}) },
+      body: `A key from ${from} was used by ${who || "an unknown client"} on ${url.hostname}${url.pathname.slice(0, 64)}`
+    })
+    if (!res.ok) throw new Error(`webhook answered ${res.status}`)
+    // quiet for an hour only once the alert is out
+    announced.set(token, now)
+  } catch (error) {
+    announced.delete(token)
+    console.log(`spor: canary alert failed: ${error.message}`)
+  }
 }
 
 // Bait instead of the origin's answer, when the path is a probe, the origin has nothing there (a
-// 403, 404 or 410, or an HTML fallback page for a file that isn't HTML) and the client isn't exempt
+// 403, 404 or 410, or an HTML fallback page for a file that is never HTML) and the client isn't
+// exempt. A SELF_COUNTED host gets none: its own Worker already counted the origin's answer, so
+// bait would count the probe twice.
+const NEVER_HTML = ["env", "git", "aws", "npm", "docker"]
 async function baitResponse(request, env, path, response) {
   const kind = baitKind(path)
   if (!kind) return null
-  const html = (response.headers.get("content-type") || "").includes("text/html")
-  const empty = [403, 404, 410].includes(response.status) || (response.status === 200 && html && kind !== "userfiles")
-  if (!empty || !sinkable({ ua: request.headers.get("user-agent") || "", bot: String(request.cf?.verifiedBotCategory || "") })) return null
   const host = new URL(request.url).hostname.replace(/\.$/, "")
-  const token = await makeToken(env.CANARY_SECRET, { host, ip: request.headers.get("cf-connecting-ip") || "", kind })
+  if (env.SELF_COUNTED?.includes(host)) return null
+  const html = (response.headers.get("content-type") || "").includes("text/html")
+  const empty = [403, 404, 410].includes(response.status) || (response.status === 200 && html && NEVER_HTML.includes(kind))
+  if (!empty || !sinkable({ ua: request.headers.get("user-agent") || "", bot: String(request.cf?.verifiedBotCategory || "") })) return null
+  const token = await makeToken(env.CANARY_SECRET, { host, ip: env.RECORD_IP === true ? request.headers.get("cf-connecting-ip") || "" : "", kind })
   const b = bait(kind, host, token)
   if (!b) return null
   response.body?.cancel()

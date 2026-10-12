@@ -71,8 +71,10 @@ count, and a dashboard hostname. Everything else is checkable.
   `classSql()`, so a class filter, the bots card and the human counts agree in JavaScript,
   AE and SQLite. Tokens are lowercase-matched substrings without quotes or wildcards. Put a
   narrower class before a broader one (Claude-User carries `claudebot@` in its user agent).
-- **The sinkhole never hides a real file.** The tap fetches the origin first and swaps in
-  bait only on a 403, 404 or 410, or an HTML fallback for a path that isn't HTML. It takes
+- **The sinkhole never hides a real file, or counts a probe twice.** The tap fetches the
+  origin first and swaps in bait only on a 403, 404 or 410, or an HTML fallback for a file
+  that is never HTML (not PHP). A `SELF_COUNTED` host gets no bait, since its own Worker
+  already counted the probe. Canary contexts and alerts carry IPs only with `RECORD_IP`. It takes
   over `/_internal/` on every host it fronts (the canary keys point there). Any failure in
   it falls back to the origin's answer. `BAIT`, `SINK_EXEMPT` and `IGNORES_ROBOTS` live in
   `src/report.js`; the bait and tokens in `tap/sink.js`.
