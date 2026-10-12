@@ -394,3 +394,18 @@ test("a quiet selected city survives the SQL cap, the frame covers every selecte
   ] }, config)
   assert.deepEqual(toJSON(two, config).hosts.map((x) => x.places[0][0]).sort(), ["Springfield, Region A, US", "Springfield, Region B, US"])
 })
+
+test("the map's script is the only one, allowed by its hash, and only on a page with a map", async () => {
+  const { MAP_SCRIPT, MAP_SCRIPT_HASH } = await import("../src/report.js")
+  const { HEADERS } = await import("../src/http.js")
+  const { createHash } = await import("node:crypto")
+  const { LAND } = await import("../src/world.js")
+  assert.equal(MAP_SCRIPT_HASH, `sha256-${createHash("sha256").update(MAP_SCRIPT).digest("base64")}`, "MAP_SCRIPT and MAP_SCRIPT_HASH change together")
+  assert.match(HEADERS["Content-Security-Policy"], new RegExp(`default-src 'none'; style-src 'unsafe-inline'; script-src '${MAP_SCRIPT_HASH.replace(/[+/=]/g, "\\$&")}';`))
+  assert.doesNotMatch(MAP_SCRIPT, /innerHTML|outerHTML|insertAdjacent|eval\(|Function\(|textContent|fetch\(|location/, "it touches no text and no network")
+  const geo = [{ host: "blog.example.com", country: "NO", region: "", city: "Oslo", lat: "59.91", lon: "10.74", n: 1 }]
+  const withMap = render(build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }], geo }, config), { days: 7, host: null, config, generated: "x", land: LAND })
+  assert.equal((withMap.match(/<script>/g) || []).length, 1)
+  assert.ok(withMap.includes(`<script>${MAP_SCRIPT}</script>`), "the exact text the hash allows")
+  assert.doesNotMatch(render(build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }] }, config), { days: 7, host: null, config, generated: "x" }), /<script/)
+})

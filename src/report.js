@@ -673,6 +673,64 @@ function lineChart(series, window, noun, dayLink = null) {
 // A labelled chart row: the name and total on the left, the chart on the right
 const chartRow = (name, total, svg) => (svg ? `<div class="chart"><div><p class="cap">${escapeHtml(name)}</p><p class="big">${fmt(total)}</p></div>${svg}</div>` : "")
 
+// The one script the page runs: wheel (and trackpad pinch) zooms the map around the cursor, a drag
+// pans it, circles and labels keep their size on screen, and a drag never counts as a click. It
+// only changes the map's viewBox, circle radii and label transforms, and reads nothing written by
+// a client. The CSP allows exactly this text by its hash (MAP_SCRIPT_HASH, checked by a test), so
+// change both together. Without it the map still works: clicks are links, zoom is the selection's.
+export const MAP_SCRIPT = `(function () {
+  var W = 720, H = 288, MIN = 24
+  function clamp(v, lo, hi) { return Math.min(Math.max(v, lo), hi) }
+  document.querySelectorAll("svg.map").forEach(function (svg) {
+    var vb = svg.getAttribute("viewBox").split(" ").map(Number)
+    var x = vb[0], y = vb[1], w = vb[2], h = vb[3], w0 = w
+    var circles = Array.prototype.map.call(svg.querySelectorAll("circle"), function (c) { return [c, Number(c.getAttribute("r"))] })
+    var tips = Array.prototype.map.call(svg.querySelectorAll(".pt"), function (g) {
+      var c = g.querySelector("circle")
+      return [g.querySelector(".tip"), c.getAttribute("cx"), c.getAttribute("cy")]
+    })
+    function draw() {
+      var s = w / w0
+      svg.setAttribute("viewBox", [x, y, w, h].join(" "))
+      circles.forEach(function (c) { c[0].setAttribute("r", c[1] * s) })
+      tips.forEach(function (t) {
+        if (t[0]) t[0].setAttribute("transform", "translate(" + t[1] + " " + t[2] + ") scale(" + s + ") translate(" + -t[1] + " " + -t[2] + ")")
+      })
+    }
+    function at(e) {
+      var box = svg.getBoundingClientRect()
+      return [x + (e.clientX - box.left) / box.width * w, y + (e.clientY - box.top) / box.height * h, box]
+    }
+    svg.addEventListener("wheel", function (e) {
+      e.preventDefault()
+      var p = at(e)
+      var nw = clamp(w * Math.exp(clamp(e.deltaY, -100, 100) * 0.004), MIN, W)
+      var nh = nw * H / W
+      x = clamp(p[0] - (p[0] - x) * nw / w, 0, W - nw)
+      y = clamp(p[1] - (p[1] - y) * nh / h, 0, H - nh)
+      w = nw
+      h = nh
+      draw()
+    }, { passive: false })
+    var drag = null, moved = false
+    svg.addEventListener("pointerdown", function (e) { drag = [e.clientX, e.clientY, x, y]; moved = false })
+    svg.addEventListener("pointermove", function (e) {
+      if (!drag) return
+      if (!moved && Math.abs(e.clientX - drag[0]) + Math.abs(e.clientY - drag[1]) < 5) return
+      moved = true
+      var box = svg.getBoundingClientRect()
+      x = clamp(drag[2] - (e.clientX - drag[0]) / box.width * w, 0, W - w)
+      y = clamp(drag[3] - (e.clientY - drag[1]) / box.height * h, 0, H - h)
+      draw()
+    })
+    window.addEventListener("pointerup", function () { drag = null })
+    svg.addEventListener("click", function (e) {
+      if (moved) { e.preventDefault(); e.stopPropagation(); moved = false }
+    }, true)
+  })
+})()`
+export const MAP_SCRIPT_HASH = "sha256-jBSLJ38AoO5cK4d5rfkLSDIO1RswZjOyc+trMXxTUMo="
+
 // Visitors by city on a world map: land is the outline from src/world.js (passed in, so this file
 // stays import-free), one circle per place, its area proportional to its count. Same projection as
 // the outline: x = (lon + 180) * 2, y = (84 - lat) * 2. A circle selects its city (state.country
@@ -927,7 +985,7 @@ td.n{width:56px;text-align:right;font-variant-numeric:tabular-nums;padding-left:
 .map{display:block;width:100%;height:auto}.map .land{fill:var(--soft);stroke:var(--line);stroke-width:.6;pointer-events:none}
 .map circle{fill:var(--accent);fill-opacity:.45;stroke:var(--accent);stroke-width:1}.map circle.sel{fill:var(--sel);fill-opacity:.8;stroke:var(--sel)}
 .map .land,.map circle{vector-effect:non-scaling-stroke}.map .hit{fill:transparent;stroke:none}.map .sea{fill:transparent;cursor:zoom-out}
-.map .tip rect{vector-effect:non-scaling-stroke}.map .pt:hover .hit{fill:var(--fg);fill-opacity:.12}
+.map .tip rect{vector-effect:non-scaling-stroke}.map{cursor:grab}.map:active{cursor:grabbing}.cap .hint{text-transform:none;letter-spacing:0}.map .pt:hover .hit{fill:var(--fg);fill-opacity:.12}
 @media (max-width:520px){body{padding:16px 12px 32px}.tile .v{font-size:24px}.card{padding:12px}}`
 
 // The sinkhole card: every canary use with the probe its key came from, and bait served by kind
@@ -991,7 +1049,7 @@ export function render(model, { days, host, filters = {}, generated, config, cac
   const map = worldMap(c.places, land, state)
   const heat = heatmap(model.heat || [])
   const picked = filters.city ? `${filters.city}, ${filters.country}` : filters.country || ""
-  const mapCard = map ? `<div class="card"><p class="cap">${sink ? "Sinkhole traffic" : filters.class && filters.class !== "human" ? escapeHtml(classLabel(filters.class)) : "Visitors"} by city${picked ? ` · ${escapeHtml(picked)} · <a href="${hrefFor(state, { country: null, city: null })}">whole world</a>` : ""}</p>${map}</div>` : ""
+  const mapCard = map ? `<div class="card"><p class="cap">${sink ? "Sinkhole traffic" : filters.class && filters.class !== "human" ? escapeHtml(classLabel(filters.class)) : "Visitors"} by city${picked ? ` · ${escapeHtml(picked)} · <a href="${hrefFor(state, { country: null, city: null })}">whole world</a>` : ""} <span class="hint">· scroll to zoom, drag to move</span></p>${map}</div>` : ""
   const tiles = `<div class="tiles">
 <div class="tile"><div class="l">Requests</div><div class="v">${fmt(c.requests)}</div><div class="s">${span}</div></div>
 ${filters.class && filters.class !== "human"
@@ -1018,6 +1076,7 @@ ${mapCard}
 ${heat ? `<div class="card"><p class="cap">Requests by weekday and hour (UTC)</p>${heat}</div>` : ""}
 ${combinedSection(c, window, config, model.partial, state)}` : `<p class="empty muted">No data in this window.</p>`}
 ${credit ? `<p class="muted foot">${credit}</p>` : ""}
+${map ? `<script>${MAP_SCRIPT}</script>` : ""}
 </body></html>`
 }
 

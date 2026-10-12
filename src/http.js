@@ -1,12 +1,13 @@
 // spor's HTTP surface, shared by the Worker (src/worker.js) and the self-hosted server
 // (src/server.js): fail closed, auth first, no-store everywhere, the dashboard at / and the JSON
 // model at /api/report. A backend only supplies `rows`, the capped result sets build() expects.
-import { requireConfig, checkAuth, clampDays, validHost, parseFilters, span, build, render, toJSON } from "./report.js"
+import { requireConfig, checkAuth, clampDays, validHost, parseFilters, span, build, render, toJSON, MAP_SCRIPT_HASH } from "./report.js"
 import { LAND } from "./world.js"
 
 export const HEADERS = {
   "Cache-Control": "no-store",
-  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  // no script but the map's, allowed by its hash (src/report.js MAP_SCRIPT)
+  "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src '${MAP_SCRIPT_HASH}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
   "X-Robots-Tag": "noindex"

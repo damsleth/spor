@@ -15,7 +15,8 @@ language.
   that expires (a KV namespace), so hashes can't be linked across days. For your
   own use you can store client IPs instead: `RECORD_IP` on the tap, `recordIp`
   for the self-hosted server. Attacker-written values are escaped under a
-  no-script CSP, and the dashboard is behind Basic auth.
+  strict CSP that runs no script but the map's own (allowed by its hash), and
+  the dashboard is behind Basic auth.
 - **Who, not just how many.** Bots and AI agents are sorted into classes (AI
   assistants fetching for a person, AI search, AI training, search engines,
   scanners, scripts, browsers on cloud networks). City, region and network come

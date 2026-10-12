@@ -82,8 +82,11 @@ count, and a dashboard hostname. Everything else is checkable.
   `RECORD_IP` (tap) or `recordIp` (server); the visitor hash only with a salt (a `SALTS`
   KV namespace, or the server's in-memory daily salt) or with the IP recording on.
 - **Every stored value is attacker-written.** Escape everything you render with
-  `escapeHtml`, and keep the no-script CSP (`default-src 'none'; style-src
-  'unsafe-inline'`): no external CSS, fonts or JavaScript. Inline SVG is fine.
+  `escapeHtml`, and keep the CSP (`default-src 'none'; style-src 'unsafe-inline';
+  script-src` the hash of `MAP_SCRIPT`): no external CSS, fonts or JavaScript, and no
+  script but the map's, which only zooms and pans the map and reads nothing a client
+  wrote. Change `MAP_SCRIPT` and `MAP_SCRIPT_HASH` together (a test checks). Every view
+  must work without the script: interactions are links. Inline SVG is fine.
 - **Only validated values reach SQL:** `days` is an integer from 1 to 31, `host` is up to
   20 comma-separated names that each match the hostname pattern (a service expands to its
   `aliases` unless the name ends in `!`, and every name to its trailing-dot form; the `!`
