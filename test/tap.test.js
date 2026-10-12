@@ -33,6 +33,15 @@ test("tap never breaks the site: missing binding or failing write", async () => 
   assert.equal((await tap.fetch(request, failing)).status, 200)
 })
 
+test("a SELF_COUNTED host passes through without a point", async () => {
+  globalThis.fetch = async () => new Response("site")
+  const points = []
+  const env = { SELF_COUNTED: ["site.example.org"], SPOR_ANALYTICS: { writeDataPoint: (p) => points.push(p) } }
+  assert.equal(await (await tap.fetch(new Request("https://site.example.org/"), env)).text(), "site")
+  await tap.fetch(new Request("https://other.example.org/"), env)
+  assert.deepEqual(points.map((p) => p.indexes[0]), ["other.example.org"])
+})
+
 test("long paths are cut to 64 characters", () => {
   const p = dataPoint(new Request(`https://app.example.org/${"a".repeat(200)}`), 200)
   assert.equal(p.blobs[0].length, 64)
