@@ -332,6 +332,9 @@ test("the status donut has a slice per code, the rest as other, and survives a s
   // eight codes of one class, the donut's full eight slices: eight colors
   const twos = render(build({ totals: ["200", "201", "202", "204", "206", "207", "208", "226"].map((status, i) => ({ host: "blog.example.com", status, n: 20 - i })) }, config), { days: 7, host: null, config, generated: "x" })
   assert.equal(new Set([...twos.matchAll(/style="fill:(#[0-9a-f]{6})"/g)].map((m) => m[1])).size, 8)
+  // eight unusual codes and other: nine slices, nine colors
+  const odd = render(build({ totals: Array.from({ length: 9 }, (_, i) => ({ host: "blog.example.com", status: String(100 + i), n: 20 - i })) }, config), { days: 7, host: null, config, generated: "x" })
+  assert.equal(new Set([...odd.matchAll(/style="fill:(#[0-9a-f]{6})"/g)].map((m) => m[1])).size, 9)
   assert.deepEqual([...fours.matchAll(/<i style="background:(#[0-9a-f]{6})">/g)].map((m) => m[1]), fills)
 })
 

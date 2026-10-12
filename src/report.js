@@ -844,6 +844,8 @@ const STATUS_COLORS = {
   c5: ["#d23b3b", "#e5579e", "#8f1d2c", "#f08a8a", "#b02d6e", "#ff5c5c", "#6b1220", "#f2a7c8"],
   co: ["#8a919d", "#b9bec8", "#5f6670", "#a4abb6", "#757c87", "#cdd1d8", "#4a5059", "#969ea9"]
 }
+// "other" (the codes past the eighth) has its own warm gray, in no class's list
+const OTHER_COLOR = "#a8977c"
 // Status codes as a donut: a slice per code (the top 8, the rest as "other"), colored by class
 // (2xx green, 3xx blue, 4xx orange, 5xx red), lighter for the less common codes of a class. The
 // center shows the total, or the hovered slice's code, count and share; a legend lists them all.
@@ -859,6 +861,7 @@ function statusPie(status) {
   // different ones (4xx: orange, yellow, rust, salmon, brown), readable on light and dark
   const seen = new Map()
   const color = (k) => {
+    if (k === "other") return OTHER_COLOR
     const list = STATUS_COLORS[cls(k)]
     const n = seen.get(cls(k)) || 0
     seen.set(cls(k), n + 1)
