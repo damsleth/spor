@@ -412,7 +412,7 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
         host: name, requests: 0, ok2xx: 0, humans2xx: 0, pageviews: 0, bots: 0, visitors: 0, status: new Map(), daily: new Map(), pages: new Map(),
         referers: new Map(), countries: new Map(), browsers: new Map(), probes: new Map(), targets: new Map(), origins: new Map(),
         cities: new Map(), networks: new Map(), classes: new Map(), agents: new Map(), ips: new Map(), names: new Map(),
-        // map points: "lat,lon" -> { lat, lon, n, label, country }
+        // map points: "lat,lon|country|city" -> { lat, lon, n, label, country }
         places: new Map()
       })
     }
@@ -460,7 +460,8 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
     const lon = Number(r.lon)
     // rows from before coordinates have none ("" reads as 0, so both must be set)
     if (r.lat === "" || r.lon === "" || r.lat === undefined || !Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) continue
-    const key = `${lat.toFixed(2)},${lon.toFixed(2)}`
+    // the place, not just the point: two cities can round to the same coordinates
+    const key = `${lat.toFixed(2)},${lon.toFixed(2)}|${r.country || ""}|${r.city || ""}`
     const p = h.places.get(key) || { lat, lon, n: 0, label, country: r.country || "" }
     p.n += num(r.n)
     h.places.set(key, p)
@@ -604,8 +605,8 @@ function worldMap(places, land, state) {
   if (!land || !places.size) return ""
   const list = [...places.values()].sort((a, b) => b.n - a.n).slice(0, MAP_PLACES)
   const max = list[0].n
-  // the biggest last, so small circles stay on top and clickable
-  const circles = list.reverse().map((p) => {
+  // biggest first, so the small circles are drawn on top and stay clickable
+  const circles = list.map((p) => {
     const x = ((p.lon + 180) * 2).toFixed(1)
     const y = ((84 - Math.max(-60, Math.min(84, p.lat))) * 2).toFixed(1)
     const r = (1.6 + 7 * Math.sqrt(p.n / max)).toFixed(1)
@@ -654,8 +655,13 @@ const shareText = (share, capped) => (capped ? `≤${share}%` : `${share}%`)
 function combine(model, config, host = null) {
   const add = (map, k, n) => map.set(k, (map.get(k) || 0) + n)
   const merge = (to, from, key = (k) => k) => { for (const [k, n] of from) add(to, key(k), n) }
-  const items = host ? host.split(",") : []
-  const unitOf = (h) => items.find((item) => coveredHosts(item, config).includes(h)) || serviceOf(h, config)
+  // host -> its unit, worked out once per host: the first selected item covering it, else its service
+  const items = (host ? host.split(",") : []).map((item) => [item, new Set(coveredHosts(item, config))])
+  const units = new Map()
+  const unitOf = (h) => {
+    if (!units.has(h)) units.set(h, items.find(([, covered]) => covered.has(h))?.[0] || serviceOf(h, config))
+    return units.get(h)
+  }
   const services = new Map()
   for (const h of model) {
     const name = unitOf(h.host)

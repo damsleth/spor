@@ -246,3 +246,34 @@ test("dotted and alias referers are self-referrals, and a proxy's aliases count 
   assert.deepEqual(json.hosts.flatMap((h) => h.referers), [["https://news.example", 1]])
   assert.equal(json.hosts.flatMap((h) => h.targets).reduce((t, [, n]) => t + n, 0), 8)
 })
+
+test("map places keep their own name and country, and small circles are drawn last", async () => {
+  const { LAND } = await import("../src/world.js")
+  const geo = [
+    { host: "blog.example.com", country: "AA", region: "", city: "First", lat: "10.00", lon: "20.00", n: 4 },
+    { host: "app.example.net", country: "BB", region: "", city: "Second", lat: "10.00", lon: "20.00", n: 3 },
+    { host: "blog.example.com", country: "NO", region: "", city: "Big", lat: "47.60", lon: "7.60", n: 100 },
+    { host: "blog.example.com", country: "CH", region: "", city: "Small", lat: "47.60", lon: "7.59", n: 1 }
+  ]
+  const model = build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }], geo }, config)
+  const html = render(model, { days: 7, host: null, config, generated: "x", land: LAND })
+  assert.match(html, /country=AA"><circle[^>]*><title>First, AA: 4/)
+  assert.match(html, /country=BB"><circle[^>]*><title>Second, BB: 3/)
+  assert.ok(html.indexOf("Big, NO") < html.indexOf("Small, CH"), "the smaller circle comes later, on top")
+})
+
+test("resolving many aliases for many selected services stays cheap", async () => {
+  const { loadConfig } = await import("../src/report.js")
+  const services = {}
+  const aliases = {}
+  for (let i = 0; i < 20; i++) {
+    services[`s${i}.example`] = "x"
+    for (let j = 0; j < 15; j++) aliases[`a${j}.s${i}.example`] = `s${i}.example`
+  }
+  const cfg = loadConfig({ services, aliases })
+  const totals = Object.keys(aliases).concat(Object.keys(services)).map((host) => ({ host, status: "200", n: 1 }))
+  const host = Object.keys(services).join(",")
+  const t = performance.now()
+  for (let k = 0; k < 5; k++) render(build({ totals }, cfg), { days: 7, host, config: cfg, generated: "x" })
+  assert.ok((performance.now() - t) / 5 < 8, "under 8 ms per page here")
+})
