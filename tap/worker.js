@@ -181,14 +181,19 @@ export default {
   async fetch(request, env, ctx) {
     // after the response: hashing, KV and the webhook stay off the request's path
     const later = (p) => (ctx?.waitUntil ? ctx.waitUntil(p) : p)
-    // the sinkhole is off unless vars.SINKHOLE is true; any failure in it falls back to the origin
-    const sinkhole = env.SINKHOLE === true
+    // the sinkhole is off unless vars.SINKHOLE is true, and for a SELF_COUNTED host: its own Worker
+    // counts it and decides what to record (the CORS proxy never records its upstream paths, which
+    // a token in the URL would put in a sink record). Any failure in it falls back to the origin.
     let path = "/"
+    let host = ""
     try {
-      path = new URL(request.url).pathname
+      const url = new URL(request.url)
+      path = url.pathname
+      host = url.hostname.replace(/\.$/, "")
     } catch {
       // keep "/"
     }
+    const sinkhole = env.SINKHOLE === true && !env.SELF_COUNTED?.includes(host)
     if (sinkhole) {
       try {
         const token = findToken(request)

@@ -270,3 +270,13 @@ test("a stalled webhook locks a key's alerts for a minute, not forever", async (
   assert.equal(sent.length, 2, "after the call timed out, the next use alerts again")
   await Promise.all(waits)
 })
+
+test("a SELF_COUNTED host is outside the sinkhole: no token interception, no challenge, no record", async () => {
+  const { points, env } = sinkEnv({ SELF_COUNTED: ["example.com"] })
+  globalThis.fetch = async () => new Response("from the proxy")
+  const token = await makeToken("s3cret", { host: "other.example", ip: "198.51.100.9", kind: "env" })
+  const used = await tap.fetch(probe(`/https://api.upstream.example/secret/path?key=${token}`), env)
+  assert.equal(await used.text(), "from the proxy")
+  assert.equal(await (await tap.fetch(probe("/_internal/x"), env)).text(), "from the proxy")
+  assert.equal(points.length, 0, "nothing recorded: the host's own Worker counts it")
+})
