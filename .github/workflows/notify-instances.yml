@@ -1,0 +1,18 @@
+# Tells instance repos that spor's main moved, so they test, take it and deploy.
+# Set up in this repo's settings: variable SPOR_INSTANCES (space-separated owner/repo) and secret
+# SPOR_DISPATCH_TOKEN (fine-grained token, Contents: read and write on those repos). Without the
+# variable the job is skipped; instances still pick spor up on their own schedule.
+name: notify instances
+on:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  dispatch:
+    if: vars.SPOR_INSTANCES != ''
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.SPOR_DISPATCH_TOKEN }}
+          REPOS: ${{ vars.SPOR_INSTANCES }}
+        run: for r in $REPOS; do gh api "repos/$r/dispatches" -f event_type=spor-updated; done
