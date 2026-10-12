@@ -713,39 +713,55 @@ export const MAP_SCRIPT = `(function () {
         if (t[0]) t[0].setAttribute("transform", "translate(" + t[1] + " " + t[2] + ") scale(" + s + ") translate(" + -t[1] + " " + -t[2] + ")")
       })
     }
-    function at(e) {
-      var box = svg.getBoundingClientRect()
-      return [x + (e.clientX - box.left) / box.width * w, y + (e.clientY - box.top) / box.height * h, box]
-    }
     svg.addEventListener("wheel", function (e) {
       e.preventDefault()
-      var p = at(e)
-      var nw = clamp(w * Math.exp(clamp(e.deltaY, -100, 100) * 0.004), MIN, W)
+      var box = svg.getBoundingClientRect()
+      var px = x + (e.clientX - box.left) / box.width * w, py = y + (e.clientY - box.top) / box.height * h
+      var dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? box.height : 1)
+      var nw = clamp(w * Math.exp(clamp(dy, -100, 100) * 0.004), MIN, W)
       var nh = nw * H / W
-      x = clamp(p[0] - (p[0] - x) * nw / w, 0, W - nw)
-      y = clamp(p[1] - (p[1] - y) * nh / h, 0, H - nh)
+      x = clamp(px - (px - x) * nw / w, 0, W - nw)
+      y = clamp(py - (py - y) * nh / h, 0, H - nh)
       w = nw
       h = nh
       draw()
     }, { passive: false })
-    var drag = null, moved = false
-    svg.addEventListener("pointerdown", function (e) { drag = [e.clientX, e.clientY, x, y]; moved = false })
-    svg.addEventListener("pointermove", function (e) {
-      if (!drag) return
-      if (!moved && Math.abs(e.clientX - drag[0]) + Math.abs(e.clientY - drag[1]) < 5) return
-      moved = true
+    // one primary, left-button pointer drags, followed on the whole window; the click that ends a
+    // drag is swallowed, nothing else (a keyboard click has detail 0 and is never touched)
+    var drag = null, swallow = false
+    function stop() { drag = null }
+    svg.addEventListener("pointerdown", function (e) {
+      if (!e.isPrimary || e.button !== 0) return
+      drag = { id: e.pointerId, cx: e.clientX, cy: e.clientY, x: x, y: y, moved: false }
+    })
+    window.addEventListener("pointermove", function (e) {
+      if (!drag || e.pointerId !== drag.id) return
+      if (!(e.buttons & 1)) return stop()
+      if (!drag.moved && Math.abs(e.clientX - drag.cx) + Math.abs(e.clientY - drag.cy) < 5) return
+      drag.moved = true
       var box = svg.getBoundingClientRect()
-      x = clamp(drag[2] - (e.clientX - drag[0]) / box.width * w, 0, W - w)
-      y = clamp(drag[3] - (e.clientY - drag[1]) / box.height * h, 0, H - h)
+      x = clamp(drag.x - (e.clientX - drag.cx) / box.width * w, 0, W - w)
+      y = clamp(drag.y - (e.clientY - drag.cy) / box.height * h, 0, H - h)
       draw()
     })
-    window.addEventListener("pointerup", function () { drag = null })
+    window.addEventListener("pointerup", function (e) {
+      if (!drag || e.pointerId !== drag.id) return
+      if (drag.moved) {
+        swallow = true
+        setTimeout(function () { swallow = false }, 0)
+      }
+      stop()
+    })
+    window.addEventListener("pointercancel", stop)
+    window.addEventListener("blur", stop)
+    svg.addEventListener("lostpointercapture", stop)
     svg.addEventListener("click", function (e) {
-      if (moved) { e.preventDefault(); e.stopPropagation(); moved = false }
+      if (swallow && e.detail > 0) { e.preventDefault(); e.stopPropagation() }
+      swallow = false
     }, true)
   })
 })()`
-export const MAP_SCRIPT_HASH = "sha256-jBSLJ38AoO5cK4d5rfkLSDIO1RswZjOyc+trMXxTUMo="
+export const MAP_SCRIPT_HASH = "sha256-kqmex5DlHR1Vsy9xTpRbOy3dirW8Dl41TYUPXNEMtjI="
 
 // Visitors by city on a world map: land is the outline from src/world.js (passed in, so this file
 // stays import-free), one circle per place, its area proportional to its count. Same projection as
@@ -796,7 +812,8 @@ function worldMap(places, land, state) {
     const g = `<g class="pt" aria-label="${escapeHtml(text)}"><circle class="hit" cx="${f(mapX(p))}" cy="${f(mapY(p))}" r="${f(Math.max(r(p), 3 * k))}"/>${tipBox(mapX(p), mapY(p), text, vb[2], vb[3], 9 * k, vb[0], vb[1])}</g>`
     return next.country || picked(p) ? `<a href="${hrefFor(state, next)}">${g}</a>` : g
   }).join("")
-  const sea = sel.length ? `<a href="${hrefFor(state, { country: null, city: null })}" aria-label="show the whole world"><rect class="sea" x="${f(vb[0])}" y="${f(vb[1])}" width="${f(vb[2])}" height="${f(vb[3])}"/></a>` : ""
+  // the whole world, so a click off the circles deselects wherever the script zooms or pans to
+  const sea = sel.length ? `<a href="${hrefFor(state, { country: null, city: null })}" aria-label="show the whole world"><rect class="sea" x="0" y="0" width="720" height="288"/></a>` : ""
   return `<svg class="map" viewBox="${vb.map(f).join(" ")}" role="img" aria-label="visitors by city, ${list.length} places${sel.length ? `, ${sel.length} selected` : ""}">${sea}<path class="land" d="${land}"/>${dots}${hits}</svg>`
 }
 

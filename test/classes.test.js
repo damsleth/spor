@@ -279,7 +279,7 @@ test("a selected place is orange, drawn last, zoomed to, and a click elsewhere d
   assert.ok(map.lastIndexOf("Ashburn") < map.lastIndexOf("Oslo, Oslo, NO"), "the selection is drawn last")
   const [x, , w] = /viewBox="([^"]+)"/.exec(map)[1].split(" ").map(Number)
   assert.ok(w < 720 && x > 300, "zoomed onto Norway")
-  assert.match(map, /<a href="\?days=7" aria-label="show the whole world"><rect class="sea"/, "a click on the map drops the selection")
+  assert.match(map, /<a href="\?days=7" aria-label="show the whole world"><rect class="sea" x="0" y="0" width="720" height="288"/, "a click anywhere on the map drops the selection")
   assert.match(map, /<a href="\?days=7"><g class="pt" aria-label="Oslo, Oslo, NO: 4"/, "a click on the selected city drops it")
   assert.match(map, /href="\?days=7&amp;country=NO&amp;city=Bergen"/, "another city in view can be picked")
   assert.match(html, /Oslo, NO · <a href="\?days=7">whole world<\/a>/)
