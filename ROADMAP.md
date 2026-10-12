@@ -17,8 +17,6 @@ Each item names the condition that justifies building it.
   isn't the author's.
 - **Cloudflare Access in front of the dashboard.** *When:* the Zero Trust free
   plan works without a card on file, which reportedly it doesn't today.
-- **A map.** Cloudflare gives latitude and longitude; spor doesn't record them. *When:* a
-  city table stops being enough.
 - **Verified AI agents.** A claimed GPTBot or ClaudeBot can be checked against the IP lists
   OpenAI and Anthropic publish, or Cloudflare's signed agents (Web Bot Auth). *When:* spoofed
   AI user agents distort the AI numbers; today a group of uniform "compatible; XBot/1.0"

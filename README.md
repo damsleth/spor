@@ -19,9 +19,12 @@ language.
 - **Who, not just how many.** Bots and AI agents are sorted into classes (AI
   assistants fetching for a person, AI search, AI training, search engines,
   scanners, scripts, browsers on cloud networks). City, region and network come
-  from Cloudflare, or for self-hosted hosts from IPtoASN and DB-IP Lite. Every
-  table row is a link that filters the whole dashboard: by day (then by the
-  hour), country, network, class, path or IP.
+  from Cloudflare, or for self-hosted hosts from IPtoASN and DB-IP Lite, and
+  a world map shows visitors by city (inline SVG, Natural Earth's outline).
+  Every table row is a link that filters the whole dashboard: by day (then by
+  the hour), country, network, class, path or IP. One card covers everything
+  in view; service chips pick one service or several, and `aliases` fold a
+  service's other names (www.) into it.
 - **Everything you host.** The pass-through `tap/` Worker counts anything behind
   the Cloudflare proxy, such as nginx on a VPS, a Pi on your tailnet or Azure.
   With wildcard routes it counts every proxied host in a zone, Worker sites

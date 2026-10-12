@@ -145,7 +145,7 @@ export function classSql(id, col) {
   return `(${matchSql(CLASSES[i], col)}${not ? ` AND ${not}` : ""})`
 }
 
-export const AE_COLUMNS = { host: "index1", path: "blob1", referer: "blob2", ua: "blob3", country: "blob4", status: "blob5", bot: "blob6", origin: "blob7", method: "blob8", city: "blob9", region: "blob10", asn: "blob11", asorg: "blob12", visitor: "blob13", ip: "blob14" }
+export const AE_COLUMNS = { host: "index1", path: "blob1", referer: "blob2", ua: "blob3", country: "blob4", status: "blob5", bot: "blob6", origin: "blob7", method: "blob8", city: "blob9", region: "blob10", asn: "blob11", asorg: "blob12", visitor: "blob13", ip: "blob14", lat: "blob15", lon: "blob16" }
 const PROBE = /wp-|\.php|\.env|\/\.git|xmlrpc|\/admin|\/cgi-bin|\/vendor\/|\/\.well-known\/security/i
 // a proxy target is /<hostname>; scanners' /wp.php or /.well-known only look like one
 const TARGET = /^\/[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/i
@@ -163,24 +163,31 @@ export function clampDays(value) {
   return Math.min(MAX_DAYS, Math.max(1, Number(value)))
 }
 
-// ?host=: one or more services or host names, comma-separated. Every name must look like a host
-// name (so it is safe as a SQL literal); the rest are dropped. Returns "a,b" or null for all hosts.
+// ?host=: one or more services or host names, comma-separated. A name ending in "!" means that
+// name only, without the aliases of the service it names. Every name must look like a host name
+// (so it is safe as a SQL literal); the rest are dropped. Returns "a,b!" or null for all hosts.
 export function validHost(value, config) {
   if (typeof value !== "string") return null
-  const names = [...new Set(value.split(",").map(normalizeHost).filter((h) => h.length <= 253 && HOSTNAME.test(h)))].slice(0, MAX_HOSTS)
+  const items = value.split(",").map((item) => {
+    const exact = item.endsWith("!")
+    const name = normalizeHost(exact ? item.slice(0, -1) : item)
+    return name.length <= 253 && HOSTNAME.test(name) ? `${name}${exact ? "!" : ""}` : null
+  })
+  const names = [...new Set(items.filter(Boolean))].slice(0, MAX_HOSTS)
   return names.length ? names.join(",") : null
 }
 
-// The host names a ?host= selection covers: a service brings its aliases; every name also matches
-// its fully qualified form with a trailing dot, which some clients send
+// The host names one selected item covers: a service brings its aliases, "name!" only itself;
+// every name also matches its fully qualified form with a trailing dot, which some clients send
+export function coveredHosts(item, config) {
+  const exact = item.endsWith("!")
+  const name = exact ? item.slice(0, -1) : item
+  const names = [name, ...(exact ? [] : Object.entries(config.aliases || {}).filter(([, s]) => s === name).map(([a]) => a))]
+  return names.flatMap((h) => [h, `${h}.`])
+}
+
 export function selectedHosts(host, config) {
-  if (!host) return []
-  const out = new Set()
-  for (const name of host.split(",")) {
-    out.add(name)
-    for (const [a, s] of Object.entries(config.aliases || {})) if (s === name) out.add(a)
-  }
-  return [...out].flatMap((h) => [h, `${h}.`])
+  return host ? [...new Set(host.split(",").flatMap((item) => coveredHosts(item, config)))] : []
 }
 
 // the host condition for queries(): AE gets quoted literals, SQLite placeholders through lit
@@ -305,7 +312,7 @@ export function queries(days, host, config, now = Date.now(), filters = {}) {
     ok: `SELECT index1 AS host, blob1 AS path, blob2 AS referer, blob3 AS ua, blob4 AS country, blob6 AS bot, blob8 AS method, blob12 AS asorg, ${n} ${from} AND ${ok} AND blob3 != '' GROUP BY host, path, referer, ua, country, bot, method, asorg ORDER BY n DESC, host, path, referer, ua, country, bot, method, asorg LIMIT ${OK_LIMIT} FORMAT JSON`,
     paths: `SELECT index1 AS host, blob1 AS path, blob5 AS status, ${n} ${from} GROUP BY host, path, status ORDER BY n DESC, host, path, status LIMIT 500 FORMAT JSON`,
     origins: `SELECT index1 AS host, blob7 AS origin, ${n} ${from} AND blob7 != '' GROUP BY host, origin ORDER BY n DESC, host, origin LIMIT 50 FORMAT JSON`,
-    geo: `SELECT index1 AS host, blob4 AS country, blob10 AS region, blob9 AS city, ${n} ${from} AND ${ok} AND blob9 != ''${people} GROUP BY host, country, region, city ORDER BY n DESC, host, country, region, city LIMIT ${LIMITS.geo} FORMAT JSON`,
+    geo: `SELECT index1 AS host, blob4 AS country, blob10 AS region, blob9 AS city, blob15 AS lat, blob16 AS lon, ${n} ${from} AND ${ok} AND blob9 != ''${people} GROUP BY host, country, region, city, lat, lon ORDER BY n DESC, host, country, region, city, lat, lon LIMIT ${LIMITS.geo} FORMAT JSON`,
     networks: `SELECT index1 AS host, blob11 AS asn, blob12 AS asorg, ${n} ${from} AND blob11 != '' GROUP BY host, asn, asorg ORDER BY n DESC, host, asn, asorg LIMIT ${LIMITS.networks} FORMAT JSON`,
     agents: `SELECT index1 AS host, blob3 AS ua, blob6 AS bot, blob12 AS asorg, ${n} ${from} AND NOT ${human} GROUP BY host, ua, bot, asorg ORDER BY n DESC, host, ua, bot, asorg LIMIT ${LIMITS.agents} FORMAT JSON`,
     visitors: `SELECT index1 AS host, toStartOfInterval(timestamp, INTERVAL '1' DAY) AS day, count(DISTINCT blob13) AS v ${from} AND blob13 != ''${people} GROUP BY host, day FORMAT JSON`,
@@ -334,10 +341,11 @@ export function browser(ua) {
   return "other"
 }
 
-function externalReferer(row) {
+// a referer from the same host, or another name of the same service, is not a referral
+function externalReferer(row, config) {
   if (!row.referer) return ""
-  const host = row.referer.replace(/^https?:\/\//, "").split("/")[0].split(":")[0]
-  return host === row.host ? "" : row.referer
+  const host = normalizeHost(row.referer.replace(/^https?:\/\//, "").split("/")[0].split(":")[0])
+  return host === normalizeHost(row.host) || serviceOf(host, config) === serviceOf(row.host, config) ? "" : row.referer
 }
 
 // The agent behind a non-human row, for the bots card: the class token it matched, else the first
@@ -366,7 +374,9 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
       hosts.set(name, {
         host: name, requests: 0, ok2xx: 0, humans2xx: 0, pageviews: 0, bots: 0, visitors: 0, status: new Map(), daily: new Map(), pages: new Map(),
         referers: new Map(), countries: new Map(), browsers: new Map(), probes: new Map(), targets: new Map(), origins: new Map(),
-        cities: new Map(), networks: new Map(), classes: new Map(), agents: new Map(), ips: new Map(), names: new Map()
+        cities: new Map(), networks: new Map(), classes: new Map(), agents: new Map(), ips: new Map(), names: new Map(),
+        // map points: "lat,lon" -> { lat, lon, n, label, country }
+        places: new Map()
       })
     }
     return hosts.get(name)
@@ -393,17 +403,31 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
     add(h.pages, r.path, n)
     add(h.countries, r.country || "??", n)
     add(h.browsers, browser(r.ua), n)
-    const ref = externalReferer(r)
+    const ref = externalReferer(r, config)
     if (ref) add(h.referers, ref, n)
   }
   for (const r of paths) {
     const h = get(r.host)
     const n = num(r.n)
     if (r.status === "404" || PROBE.test(r.path)) add(h.probes, r.path, n)
-    if (config.proxyHosts.has(r.host) && TARGET.test(r.path) && !PROBE.test(r.path) && !isAsset(r.path)) add(h.targets, r.path, n)
+    // a proxy's aliases and dotted names are the proxy too
+    const proxy = config.proxyHosts.has(normalizeHost(r.host)) || config.proxyHosts.has(serviceOf(r.host, config))
+    if (proxy && TARGET.test(r.path) && !PROBE.test(r.path) && !isAsset(r.path)) add(h.targets, r.path, n)
   }
   for (const r of origins) add(get(r.host).origins, r.origin, num(r.n))
-  for (const r of geo) add(get(r.host).cities, [r.city, r.region, r.country].filter(Boolean).join(", "), num(r.n))
+  for (const r of geo) {
+    const h = get(r.host)
+    const label = [r.city, r.region, r.country].filter(Boolean).join(", ")
+    add(h.cities, label, num(r.n))
+    const lat = Number(r.lat)
+    const lon = Number(r.lon)
+    // rows from before coordinates have none ("" reads as 0, so both must be set)
+    if (r.lat === "" || r.lon === "" || r.lat === undefined || !Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) continue
+    const key = `${lat.toFixed(2)},${lon.toFixed(2)}`
+    const p = h.places.get(key) || { lat, lon, n: 0, label, country: r.country || "" }
+    p.n += num(r.n)
+    h.places.set(key, p)
+  }
   for (const r of networks) {
     const h = get(r.host)
     add(h.networks, String(r.asn), num(r.n))
@@ -454,7 +478,8 @@ export function toJSON(model, config, { days, host, filters = {} } = {}) {
       countries: top(h.countries), browsers: top(h.browsers), probes: top(h.probes), targets: top(h.targets), origins: top(h.origins),
       cities: top(h.cities), networks: top(h.networks).map(([asn, n]) => [asn, h.names.get(`as:${asn}`) || "", n]),
       classes: top(h.classes), agents: top(h.agents).map(([k, n]) => [k.slice(0, k.indexOf("\t")), k.slice(k.indexOf("\t") + 1), n]),
-      ips: top(h.ips).map(([ip, n]) => [ip, h.names.get(`ip:${ip}`) || "", n])
+      ips: top(h.ips).map(([ip, n]) => [ip, h.names.get(`ip:${ip}`) || "", n]),
+      places: [...h.places.values()].sort((a, b) => b.n - a.n).map((p) => [p.label, p.lat, p.lon, p.n])
     }))
   }
 }
@@ -526,6 +551,26 @@ function bars(daily, window, label, tall = false, dayLink = null) {
 <div class="axis"><span>${escapeHtml(first)}</span><span>peak ${max}/${unit}</span><span>${escapeHtml(last)}</span></div>`
 }
 
+// Visitors by city on a world map: land is the outline from src/world.js (passed in, so this file
+// stays import-free), one circle per place, its area proportional to its count, linking to that
+// country's filter. Same projection as the outline: x = (lon + 180) * 2, y = (84 - lat) * 2.
+const MAP_PLACES = 300
+function worldMap(places, land, state) {
+  if (!land || !places.size) return ""
+  const list = [...places.values()].sort((a, b) => b.n - a.n).slice(0, MAP_PLACES)
+  const max = list[0].n
+  // the biggest last, so small circles stay on top and clickable
+  const circles = list.reverse().map((p) => {
+    const x = ((p.lon + 180) * 2).toFixed(1)
+    const y = ((84 - Math.max(-60, Math.min(84, p.lat))) * 2).toFixed(1)
+    const r = (1.6 + 7 * Math.sqrt(p.n / max)).toFixed(1)
+    const dot = `<circle cx="${x}" cy="${y}" r="${r}"><title>${escapeHtml(p.label)}: ${p.n}</title></circle>`
+    const href = filterLink(state, "country", p.country)
+    return href ? `<a href="${href}">${dot}</a>` : dot
+  }).join("")
+  return `<svg class="map" viewBox="0 0 720 288" role="img" aria-label="visitors by city, ${list.length} places"><path d="${land}"/>${circles}</svg>`
+}
+
 const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 // Requests by weekday and UTC hour: one cell per hour, its opacity proportional to the busiest
 function heatmap(heat) {
@@ -559,29 +604,38 @@ const shareText = (share, capped) => (capped ? `≤${share}%` : `${share}%`)
 
 // Hosts folded into services (aliases and trailing dots count as their service), every breakdown
 // summed across them. With more than one service in view, page and probe rows carry their service.
-function combine(model, config) {
+// A row's unit is the selected item that covers its host (so narrowing keeps "name!" and alias
+// selections as they are), or with nothing selected its service.
+function combine(model, config, host = null) {
   const add = (map, k, n) => map.set(k, (map.get(k) || 0) + n)
   const merge = (to, from, key = (k) => k) => { for (const [k, n] of from) add(to, key(k), n) }
+  const items = host ? host.split(",") : []
+  const unitOf = (h) => items.find((item) => coveredHosts(item, config).includes(h)) || serviceOf(h, config)
   const services = new Map()
   for (const h of model) {
-    const name = serviceOf(h.host, config)
+    const name = unitOf(h.host)
     const s = services.get(name) || { service: name, requests: 0, pageviews: 0, visitors: 0, ok2xx: 0, bots: 0, hosts: new Map() }
     for (const k of ["requests", "pageviews", "visitors", "ok2xx", "bots"]) s[k] += h[k]
     add(s.hosts, h.host, h.requests)
     services.set(name, s)
   }
   const multi = services.size > 1
-  const c = { services, multi, names: new Map(), hostnames: new Map() }
+  const c = { services, multi, names: new Map(), hostnames: new Map(), places: new Map() }
   for (const k of ["requests", "pageviews", "visitors", "ok2xx", "bots"]) c[k] = model.reduce((t, h) => t + h[k], 0)
   for (const k of ["status", "daily", "referers", "countries", "cities", "browsers", "networks", "classes", "agents", "ips", "origins", "pages", "probes", "targets"]) c[k] = new Map()
   for (const h of model) {
-    const svc = serviceOf(h.host, config)
-    // a page or probe key is "<service>\t<path>" when several services are in view
+    const svc = unitOf(h.host)
+    // a page or probe key is "<unit>\t<path>" when several units are in view
     const scoped = (p) => (multi ? `${svc}\t${p}` : p)
     for (const k of ["status", "daily", "referers", "countries", "cities", "browsers", "networks", "classes", "agents", "ips", "origins", "targets"]) merge(c[k], h[k])
     merge(c.pages, h.pages, scoped)
     merge(c.probes, h.probes, scoped)
     for (const [k, v] of h.names) c.names.set(k, v)
+    for (const [k, p] of h.places) {
+      const q = c.places.get(k) || { ...p, n: 0 }
+      q.n += p.n
+      c.places.set(k, q)
+    }
     add(c.hostnames, h.host, h.requests)
   }
   return c
@@ -593,20 +647,23 @@ function combinedSection(c, window, config, capped, state) {
   const by = (key) => ({ link: (k) => filterLink(state, key, k) })
   const tab = (k) => k.indexOf("\t")
   // a scoped page row: "<service><path>", linking to that service and path
+  const unitLabel = (u) => (u.endsWith("!") ? `${u.slice(0, -1)} (this name only)` : u)
   const scoped = c.multi
-    ? { label: (k) => `${k.slice(0, tab(k))}${k.slice(tab(k) + 1)}`, link: (k) => filterLink({ ...state, host: k.slice(0, tab(k)) }, "path", k.slice(tab(k) + 1)) }
+    ? { label: (k) => `${k.slice(0, tab(k)).replace(/!$/, "")}${k.slice(tab(k) + 1)}`, link: (k) => filterLink({ ...state, host: k.slice(0, tab(k)) }, "path", k.slice(tab(k) + 1)) }
     : by("path")
   const services = new Map([...c.services].map(([name, s]) => [name, s.requests]))
   const only = c.services.size === 1 ? [...c.services.keys()][0] : null
-  const desc = only ? config.services[only] : ""
+  const desc = only ? config.services[only.replace(/!$/, "")] : ""
   const named = c.hostnames.size > c.services.size
+  // a host-names row selects that name alone: "name!" when it is a service with aliases
+  const exact = (h) => (Object.values(config.aliases || {}).includes(h) ? `${h}!` : h)
   return `<section class="card">
-${only ? `<header><h2>${escapeHtml(only)}${desc ? ` <span class="desc">${escapeHtml(desc)}</span>` : ""}</h2></header>` : ""}
+${only ? `<header><h2>${escapeHtml(unitLabel(only))}${desc ? ` <span class="desc">${escapeHtml(desc)}</span>` : ""}</h2></header>` : ""}
 <p class="summary"><b>${fmt(c.requests)}</b> requests · <b>${fmt(c.pageviews)}</b> human page views${c.visitors ? ` · <b>${fmt(c.visitors)}</b> unique visitors` : ""} · ${shareText(share, capped)} of 2xx from bots${capped ? " (upper bound)" : ""}</p>
 ${bars(c.daily, window, "requests", true, (day) => hrefFor(state, { day }))}
 ${statusMix(c.status)}
 <div class="grid">
-${c.multi ? table("services", services, { label: (k) => config.services[k] ? `${k} · ${config.services[k]}` : k, link: (k) => hrefFor(state, { host: k }) }) : ""}${named ? table("host names", c.hostnames, { link: (k) => hrefFor(state, { host: k }) }) : ""}${table("pages", c.pages, scoped)}${table("referers", c.referers)}${table("countries", c.countries, by("country"))}${table("cities", c.cities)}${table("browsers", c.browsers)}${table("networks", c.networks, { label: (asn) => `AS${asn} ${c.names.get(`as:${asn}`) || ""}`.trim(), ...by("asn") })}${table("bots and AI", c.classes, { label: classLabel, ...by("class") })}${table("agents", c.agents, { label: (k) => k.slice(tab(k) + 1), link: (k) => filterLink(state, "class", k.slice(0, tab(k))) })}${table("IP addresses", c.ips, { label: (ip) => `${ip} ${c.names.get(`ip:${ip}`) || ""}`.trim(), ...by("ip") })}${table("404s and probes", c.probes, scoped)}${table("proxy targets", c.targets)}${table("proxy callers (Origin)", c.origins)}
+${c.multi ? table("services", services, { label: (k) => config.services[k] ? `${k} · ${config.services[k]}` : unitLabel(k), link: (k) => hrefFor(state, { host: k }) }) : ""}${named ? table("host names", c.hostnames, { link: (k) => hrefFor(state, { host: exact(k) }) }) : ""}${table("pages", c.pages, scoped)}${table("referers", c.referers)}${table("countries", c.countries, by("country"))}${table("cities", c.cities)}${table("browsers", c.browsers)}${table("networks", c.networks, { label: (asn) => `AS${asn} ${c.names.get(`as:${asn}`) || ""}`.trim(), ...by("asn") })}${table("bots and AI", c.classes, { label: classLabel, ...by("class") })}${table("agents", c.agents, { label: (k) => k.slice(tab(k) + 1), link: (k) => filterLink(state, "class", k.slice(0, tab(k))) })}${table("IP addresses", c.ips, { label: (ip) => `${ip} ${c.names.get(`ip:${ip}`) || ""}`.trim(), ...by("ip") })}${table("404s and probes", c.probes, scoped)}${table("proxy targets", c.targets)}${table("proxy callers (Origin)", c.origins)}
 </div>
 </section>`
 }
@@ -658,21 +715,25 @@ td.n{width:56px;text-align:right;font-variant-numeric:tabular-nums;padding-left:
 .cell span{position:relative;display:block;overflow-wrap:anywhere}
 .empty{text-align:center;padding:48px 0}
 .chips.on a{border-color:var(--accent);color:var(--fg)}
+.chips span.off{padding:2px 10px;border:1px dashed var(--line);border-radius:999px;font-size:13px;color:var(--muted)}
 .heat{display:block;width:100%;max-width:528px;margin-top:12px;fill:var(--accent);font-size:7px}.heat text{fill:var(--muted)}
 .cell a{color:inherit}.cell a:hover{color:var(--accent)}
 .spark a rect{cursor:pointer}
 .foot{font-size:12px;margin-top:24px}
+.map{display:block;width:100%;height:auto}.map path{fill:var(--soft);stroke:var(--line);stroke-width:.6}
+.map circle{fill:var(--accent);fill-opacity:.45;stroke:var(--accent);stroke-width:.6}.map a:hover circle{fill-opacity:.8}
 @media (max-width:520px){body{padding:16px 12px 32px}.tile .v{font-size:24px}.card{padding:12px}}`
 
 // credit: an attribution line the backend owes (the self-hosted server's DB-IP data is CC BY 4.0)
 // credit: an attribution line the backend owes (the self-hosted server's DB-IP data is CC BY 4.0)
-export function render(model, { days, host, filters = {}, generated, config, cache = "cached up to 5 min", credit = "", today = new Date().toISOString().slice(0, 10) }) {
+// land: the map's outline (LAND from src/world.js); without it there is no map
+export function render(model, { days, host, filters = {}, generated, config, cache = "cached up to 5 min", credit = "", land = "", today = new Date().toISOString().slice(0, 10) }) {
   const state = { days, host, ...filters }
   // one day, by the hour, when the window is a day; whole days otherwise
   const window = filters.day || days === 1
     ? Array.from({ length: 24 }, (_, h) => `${filters.day || today} ${String(h).padStart(2, "0")}`)
     : windowDays(days, today)
-  const c = combine(model, config)
+  const c = combine(model, config, host)
   const dayLinks = [1, 7, 31].map((d) => d === days && !filters.day ? `<b aria-current="true">${d}d</b>` : `<a href="${hrefFor(state, { days: d, day: null })}">${d}d</a>`).join("")
   // every service seen in the window, busiest first; a chip adds its service to the selection or
   // takes it out, so one or several can be in view
@@ -687,10 +748,12 @@ export function render(model, { days, host, filters = {}, generated, config, cac
     return hrefFor(state, { host: next.join(",") || null })
   }
   const chip = (name) => {
+    const label = name.endsWith("!") ? `${name.slice(0, -1)} only` : name
     const title = config.services[name] ? ` title="${escapeHtml(config.services[name])}"` : ""
-    return selected.includes(name)
-      ? `<a class="sel" href="${toggle(name)}"${title} aria-current="true">${escapeHtml(name)} ×</a>`
-      : `<a href="${toggle(name)}"${title}>${escapeHtml(name)}</a>`
+    if (selected.includes(name)) return `<a class="sel" href="${toggle(name)}"${title} aria-current="true">${escapeHtml(label)} ×</a>`
+    // a full selection takes no more: the 21st name would be dropped
+    if (selected.length >= MAX_HOSTS) return `<span class="off" title="at most ${MAX_HOSTS} at a time">${escapeHtml(label)}</span>`
+    return `<a href="${toggle(name)}"${title}>${escapeHtml(label)}</a>`
   }
   const hostLinks = [host ? `<a href="${hrefFor(state, { host: null })}">all</a>` : `<b aria-current="true">all</b>`, ...[...seen].sort((a, b) => b[1] - a[1]).map(([name]) => chip(name))].join("")
   const named = { class: classLabel }
@@ -720,6 +783,7 @@ ${CSS}
 <nav class="bar" aria-label="filters"><div class="seg" aria-label="days">${dayLinks}</div><div class="chips" aria-label="services">${hostLinks}</div>${active ? `<div class="chips on" aria-label="active filters">${active}</div>` : ""}</nav>
 ${model.partial ? `<p class="note">Breakdowns are partial: the detail query hit its ${OK_LIMIT}-group cap, so human counts are a lower bound.</p>` : ""}
 ${model.length ? `${tiles}
+${worldMap(c.places, land, state) ? `<div class="card"><p class="cap">${filters.class && filters.class !== "human" ? escapeHtml(classLabel(filters.class)) : "Visitors"} by city</p>${worldMap(c.places, land, state)}</div>` : ""}
 ${heatmap(model.heat || []) ? `<div class="card"><p class="cap">Requests by weekday and hour (UTC)</p>${heatmap(model.heat || [])}</div>` : ""}
 ${combinedSection(c, window, config, model.partial, state)}` : `<p class="empty muted">No data in this window.</p>`}
 ${credit ? `<p class="muted foot">${credit}</p>` : ""}

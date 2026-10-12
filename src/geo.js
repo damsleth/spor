@@ -42,17 +42,19 @@ export function openGeo(file) {
   if (!file || !existsSync(file)) return null
   const db = new DatabaseSync(file)
   const asn = db.prepare("SELECT end, asn, asorg, country FROM asn WHERE start <= ? ORDER BY start DESC LIMIT 1")
-  const city = db.prepare("SELECT end, country, region, city FROM city WHERE start <= ? ORDER BY start DESC LIMIT 1")
+  // a geo file from before coordinates has no lat and lon; it answers without them until rebuilt
+  const coords = db.prepare("SELECT name FROM pragma_table_info('city')").all().some((r) => r.name === "lat")
+  const city = db.prepare(`SELECT end, country, region, city${coords ? ", lat, lon" : ""} FROM city WHERE start <= ? ORDER BY start DESC LIMIT 1`)
   return {
     // ip -> { asn, asorg, country, region, city }, each "" when unknown
     lookup(ip) {
-      const out = { asn: "", asorg: "", country: "", region: "", city: "" }
+      const out = { asn: "", asorg: "", country: "", region: "", city: "", lat: "", lon: "" }
       const hex = ipToHex(ip)
       if (!hex) return out
       const a = asn.get(hex)
       if (a && a.end >= hex) Object.assign(out, { asn: a.asn, asorg: a.asorg, country: a.country })
       const c = city.get(hex)
-      if (c && c.end >= hex) Object.assign(out, { country: c.country || out.country, region: c.region, city: c.city })
+      if (c && c.end >= hex) Object.assign(out, { country: c.country || out.country, region: c.region, city: c.city, lat: c.lat || "", lon: c.lon || "" })
       return out
     },
     close: () => db.close()
@@ -83,7 +85,7 @@ export async function updateGeo(file, { fetchImpl = fetch, now = Date.now(), min
   rmSync(tmp, { force: true })
   const db = new DatabaseSync(tmp)
   db.exec(`CREATE TABLE asn (start TEXT PRIMARY KEY, end TEXT NOT NULL, asn TEXT NOT NULL, asorg TEXT NOT NULL, country TEXT NOT NULL) WITHOUT ROWID;
-CREATE TABLE city (start TEXT PRIMARY KEY, end TEXT NOT NULL, country TEXT NOT NULL, region TEXT NOT NULL, city TEXT NOT NULL) WITHOUT ROWID;`)
+CREATE TABLE city (start TEXT PRIMARY KEY, end TEXT NOT NULL, country TEXT NOT NULL, region TEXT NOT NULL, city TEXT NOT NULL, lat TEXT NOT NULL, lon TEXT NOT NULL) WITHOUT ROWID;`)
   const counts = { asn: 0, city: 0, month: "" }
   try {
     db.exec("BEGIN")
@@ -97,17 +99,18 @@ CREATE TABLE city (start TEXT PRIMARY KEY, end TEXT NOT NULL, country TEXT NOT N
       addAsn.run(s, e, asn, String(name || "").slice(0, 64), country === "None" ? "" : String(country || "").slice(0, 2))
       counts.asn++
     }
-    const addCity = db.prepare("INSERT OR REPLACE INTO city VALUES (?, ?, ?, ?, ?)")
+    const addCity = db.prepare("INSERT OR REPLACE INTO city VALUES (?, ?, ?, ?, ?, ?, ?)")
+    const coord = (v) => (v !== "" && Number.isFinite(Number(v)) ? Number(v).toFixed(2) : "")
     for (const back of [0, 1]) {
       const d = new Date(now)
       const month = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - back, 1)).toISOString().slice(0, 7)
       try {
         for await (const line of gzipLines(cityUrl(month), fetchImpl)) {
-          const [start, end, , country, region, city] = csvFields(line)
+          const [start, end, , country, region, city, lat, lon] = csvFields(line)
           const s = ipToHex(start)
           const e = ipToHex(end)
           if (!s || !e || country === "ZZ") continue
-          addCity.run(s, e, country.slice(0, 2), String(region || "").slice(0, 64), String(city || "").slice(0, 64))
+          addCity.run(s, e, country.slice(0, 2), String(region || "").slice(0, 64), String(city || "").slice(0, 64), coord(lat), coord(lon))
           counts.city++
         }
         counts.month = month

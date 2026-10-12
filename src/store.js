@@ -12,10 +12,9 @@ import { OK_LIMIT, LIMITS, clampDays, validHost, hostSql, parseFilters, span, fi
 
 export const HOUR = 3600
 // the Analytics Engine blobs in order (AE_COLUMNS in src/report.js), host first
-export const FIELDS = ["host", "path", "referer", "ua", "country", "status", "bot", "origin", "method", "city", "region", "asn", "asorg", "visitor", "ip"]
+export const FIELDS = ["host", "path", "referer", "ua", "country", "status", "bot", "origin", "method", "city", "region", "asn", "asorg", "visitor", "ip", "lat", "lon"]
 // the store's column for each filter and class field: the same names
 const COLS = Object.fromEntries(FIELDS.map((f) => [f, f]))
-const V1_FIELDS = FIELDS.slice(0, 9)
 const createHits = (name) => `CREATE TABLE IF NOT EXISTS ${name} (
   hour INTEGER NOT NULL, ${FIELDS.map((f) => `${f} TEXT NOT NULL DEFAULT ''`).join(", ")}, source TEXT NOT NULL, n INTEGER NOT NULL,
   PRIMARY KEY (hour, ${FIELDS.join(", ")}, source)
@@ -27,12 +26,13 @@ export function openStore(file = ":memory:") {
   const db = new DatabaseSync(file)
   db.exec("PRAGMA journal_mode = WAL")
   const columns = db.prepare("SELECT name FROM pragma_table_info('hits')").all().map((r) => r.name)
-  if (columns.length && !columns.includes("ip")) {
-    // a store from before the geo, network, visitor and IP columns: the key spans every column,
-    // so rebuild the table and carry the rows over with the new columns empty
-    db.exec(`BEGIN; ALTER TABLE hits RENAME TO hits_v1; ${createHits("hits")};
-INSERT INTO hits (hour, ${V1_FIELDS.join(", ")}, source, n) SELECT hour, ${V1_FIELDS.join(", ")}, source, n FROM hits_v1;
-DROP TABLE hits_v1; COMMIT`)
+  const kept = FIELDS.filter((f) => columns.includes(f))
+  if (columns.length && kept.length < FIELDS.length) {
+    // a store from before some of these columns: the key spans every column, so rebuild the table
+    // and carry the rows over with the new columns empty
+    db.exec(`BEGIN; ALTER TABLE hits RENAME TO hits_old; ${createHits("hits")};
+INSERT INTO hits (hour, ${kept.join(", ")}, source, n) SELECT hour, ${kept.join(", ")}, source, n FROM hits_old;
+DROP TABLE hits_old; COMMIT`)
   }
   db.exec(`${createHits("hits")};
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`)
@@ -122,7 +122,7 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
         ok: all(`SELECT host, path, referer, ua, country, bot, method, asorg, ${n} ${where} AND ${ok} AND ua != '' GROUP BY host, path, referer, ua, country, bot, method, asorg ORDER BY n DESC, host, path, referer, ua, country, bot, method, asorg LIMIT ${OK_LIMIT}`),
         paths: all(`SELECT host, path, status, ${n} ${where} GROUP BY host, path, status ORDER BY n DESC, host, path, status LIMIT 500`),
         origins: all(`SELECT host, origin, ${n} ${where} AND origin != '' GROUP BY host, origin ORDER BY n DESC, host, origin LIMIT 50`),
-        geo: all(`SELECT host, country, region, city, ${n} ${where} AND ${ok} AND city != ''${people} GROUP BY host, country, region, city ORDER BY n DESC, host, country, region, city LIMIT ${LIMITS.geo}`),
+        geo: all(`SELECT host, country, region, city, lat, lon, ${n} ${where} AND ${ok} AND city != ''${people} GROUP BY host, country, region, city, lat, lon ORDER BY n DESC, host, country, region, city, lat, lon LIMIT ${LIMITS.geo}`),
         networks: all(`SELECT host, asn, asorg, ${n} ${where} AND asn != '' GROUP BY host, asn, asorg ORDER BY n DESC, host, asn, asorg LIMIT ${LIMITS.networks}`),
         agents: all(`SELECT host, ua, bot, asorg, ${n} ${where} AND NOT ${human} GROUP BY host, ua, bot, asorg ORDER BY n DESC, host, ua, bot, asorg LIMIT ${LIMITS.agents}`),
         visitors: all(`SELECT host, strftime('%Y-%m-%d', hour, 'unixepoch') AS day, count(DISTINCT visitor) AS v ${where} AND visitor != ''${people} GROUP BY host, day`),

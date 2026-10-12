@@ -79,7 +79,8 @@ count, and a dashboard hostname. Everything else is checkable.
   'unsafe-inline'`): no external CSS, fonts or JavaScript. Inline SVG is fine.
 - **Only validated values reach SQL:** `days` is an integer from 1 to 31, `host` is up to
   20 comma-separated names that each match the hostname pattern (a service expands to its
-  `aliases`, and every name to its trailing-dot form), and `dataset` must match
+  `aliases` unless the name ends in `!`, and every name to its trailing-dot form; the `!`
+  never reaches SQL), and `dataset` must match
   `[A-Za-z0-9_]+`. Filters
   (`parseFilters`) are dropped unless they match: `country` `[A-Z0-9]{2}`, `asn` digits,
   `day` a real date within AE's 92 days, `class` a class id, `path` printable ASCII

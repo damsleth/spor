@@ -43,10 +43,11 @@ test("updateGeo loads both sources, falls back a month on 404, and lookups find 
   assert.deepEqual(seen, [ASN_URL, cityUrl("2030-03"), cityUrl("2030-02")])
   assert.equal(existsSync(`${file}.tmp`), false)
   const geo = openGeo(file)
-  assert.deepEqual(geo.lookup("1.0.0.7"), { asn: "13335", asorg: "CLOUDFLARENET", country: "AU", region: "Queensland", city: "South Brisbane" })
-  assert.deepEqual(geo.lookup("2001:db8::42"), { asn: "64500", asorg: "EXAMPLE-NET", country: "NO", region: "Oslo", city: "Oslo" })
-  assert.deepEqual(geo.lookup("1.0.2.1"), { asn: "", asorg: "", country: "", region: "", city: "" }, "unrouted and unknown")
-  assert.deepEqual(geo.lookup("not an ip"), { asn: "", asorg: "", country: "", region: "", city: "" })
+  const none = { asn: "", asorg: "", country: "", region: "", city: "", lat: "", lon: "" }
+  assert.deepEqual(geo.lookup("1.0.0.7"), { asn: "13335", asorg: "CLOUDFLARENET", country: "AU", region: "Queensland", city: "South Brisbane", lat: "-27.40", lon: "153.00" })
+  assert.deepEqual(geo.lookup("2001:db8::42"), { asn: "64500", asorg: "EXAMPLE-NET", country: "NO", region: "Oslo", city: "Oslo", lat: "59.90", lon: "10.70" })
+  assert.deepEqual(geo.lookup("1.0.2.1"), none, "unrouted and unknown")
+  assert.deepEqual(geo.lookup("not an ip"), none)
   geo.close()
   assert.equal(openGeo(join(dir, "missing.db")), null)
 })
@@ -124,4 +125,24 @@ test("the tap and the server hash a long user agent and an IPv6 address the same
   const server = enrich({ host: "app.example.net", ua, ip: "2001:DB8::1" }, { recordIp: true, now }).visitor
   assert.equal(tap, server)
   assert.equal(dataPoint(request, 200).blobs[2].length, 256)
+})
+
+test("a geo file from before coordinates still answers, without them", async () => {
+  const { DatabaseSync } = await import("node:sqlite")
+  const file = join(mkdtempSync(join(tmpdir(), "spor-geo-")), "old.db")
+  const db = new DatabaseSync(file)
+  db.exec(`CREATE TABLE asn (start TEXT PRIMARY KEY, end TEXT, asn TEXT, asorg TEXT, country TEXT);
+CREATE TABLE city (start TEXT PRIMARY KEY, end TEXT, country TEXT, region TEXT, city TEXT);
+INSERT INTO city VALUES ('${ipToHex("1.0.0.0")}', '${ipToHex("1.0.0.255")}', 'AU', 'Queensland', 'Brisbane');`)
+  db.close()
+  const geo = openGeo(file)
+  assert.deepEqual([geo.lookup("1.0.0.7").city, geo.lookup("1.0.0.7").lat], ["Brisbane", ""])
+  geo.close()
+})
+
+test("a dotted host name hashes as the same visitor in the tap", async () => {
+  const now = Date.parse("2031-05-12T10:00:00Z")
+  const a = await visitorId(new Request("https://app.example.net/", { headers: { "user-agent": "x" } }), { RECORD_IP: true }, "203.0.113.7", now)
+  const b = await visitorId(new Request("https://app.example.net./", { headers: { "user-agent": "x" } }), { RECORD_IP: true }, "203.0.113.7", now)
+  assert.equal(a, b)
 })

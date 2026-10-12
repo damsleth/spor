@@ -189,9 +189,60 @@ test("the combined view sums services, names their hosts, and chips toggle a sel
   const all = render(model, { days: 7, host: null, config: cfg, generated: "x" })
   assert.match(all, /example\.com · site<\/a><\/span><\/div><\/td><td class="n">9</, "the service sums its hosts")
   assert.match(all, /blog\.example\.com\/<\/a>/, "with several services, a page row names its service")
-  assert.match(all, /href="\?days=7&amp;host=example\.com">example\.com<\/a>/, "a chip adds its service")
+  assert.match(all, /href="\?days=7&amp;host=example\.com" title="site">example\.com<\/a>/, "a chip adds its service")
   assert.equal((all.match(/<section class="card">/g) || []).length, 1, "one combined card")
   const one = render(build({ ...rows, totals: rows.totals.slice(0, 3) }, cfg), { days: 7, host: "example.com,blog.example.com", config: cfg, generated: "x" })
   assert.match(one, /class="sel" href="\?days=7&amp;host=blog\.example\.com"[^>]*>example\.com ×/, "a selected chip removes itself")
   assert.match(one, /host names/, "a service with several names lists them")
+})
+
+test("the map draws one linked circle per place, from rows with coordinates only", async () => {
+  const { LAND } = await import("../src/world.js")
+  assert.match(LAND, /^[MLZ0-9 ]+$/, "the outline is only path commands and integers")
+  const geo = [
+    { host: "blog.example.com", country: "NO", region: "Oslo", city: "Oslo", lat: "59.91", lon: "10.74", n: 4 },
+    { host: "blog.example.com", country: "AE", region: "Abu Dhabi", city: "Abu Dhabi", lat: "24.45", lon: "54.38", n: 1 },
+    { host: "blog.example.com", country: "US", region: "", city: "Old", lat: "", lon: "", n: 9 }
+  ]
+  const model = build({ totals: [{ host: "blog.example.com", status: "200", n: 14 }], geo }, config)
+  const html = render(model, { days: 7, host: null, config, generated: "x", land: LAND })
+  assert.equal((html.match(/<circle /g) || []).length, 2, "the row without coordinates has no circle")
+  assert.match(html, /<a href="\?days=7&amp;country=NO"><circle cx="381\.5" cy="48\.2"/)
+  assert.match(html, /Oslo, Oslo, NO: 4/)
+  assert.doesNotMatch(render(model, { days: 7, host: null, config, generated: "x" }), /class="map"/, "no outline, no map")
+  assert.deepEqual(toJSON(model, config).hosts[0].places[0], ["Oslo, Oslo, NO", 59.91, 10.74, 4])
+})
+
+test("narrowing never widens: host names select one name, page rows keep the selected item", async () => {
+  const { loadConfig, selectedHosts, validHost } = await import("../src/report.js")
+  const cfg = loadConfig({ services: { "example.com": "site", "other.example": "other" }, aliases: { "www.example.com": "example.com" }, proxyHosts: ["example.com"] })
+  assert.equal(validHost("example.com!,www.example.com", cfg), "example.com!,www.example.com")
+  assert.deepEqual(selectedHosts("example.com!", cfg), ["example.com", "example.com."], "name! is that name alone")
+  const rows = {
+    totals: [{ host: "example.com", status: "200", n: 5 }, { host: "www.example.com", status: "200", n: 3 }, { host: "other.example", status: "200", n: 1 }],
+    ok: [{ host: "www.example.com", path: "/a", ua: chrome, method: "GET", n: 3 }, { host: "other.example", path: "/b", ua: chrome, method: "GET", n: 1 }]
+  }
+  const all = render(build(rows, cfg), { days: 7, host: null, config: cfg, generated: "x" })
+  assert.match(all, /href="\?days=7&amp;host=example\.com!">example\.com<\/a>/, "the canonical name's row selects it alone")
+  const picked = render(build(rows, cfg), { days: 7, host: "www.example.com,other.example", config: cfg, generated: "x" })
+  assert.match(picked, /href="\?days=7&amp;host=www\.example\.com&amp;path=%2Fa"/, "a page row keeps the alias selection")
+  const full = Array.from({ length: 20 }, (_, i) => `h${i}.example`).join(",")
+  const limit = render(build({ ...rows, hosts: [{ host: "new.example", n: 1 }] }, cfg), { days: 7, host: full, config: cfg, generated: "x" })
+  assert.match(limit, /<span class="off" title="at most 20 at a time">new\.example<\/span>/)
+})
+
+test("dotted and alias referers are self-referrals, and a proxy's aliases count as the proxy", async () => {
+  const { loadConfig } = await import("../src/report.js")
+  const cfg = loadConfig({ services: { "example.com": "site" }, aliases: { "www.example.com": "example.com" }, proxyHosts: ["example.com"] })
+  const model = build({
+    ok: [
+      { host: "example.com.", path: "/", referer: "https://example.com.", ua: chrome, method: "GET", n: 1 },
+      { host: "example.com", path: "/", referer: "https://www.example.com", ua: chrome, method: "GET", n: 1 },
+      { host: "example.com", path: "/", referer: "https://news.example", ua: chrome, method: "GET", n: 1 }
+    ],
+    paths: [{ host: "example.com", path: "/target.example", status: "200", n: 5 }, { host: "www.example.com", path: "/target.example", status: "200", n: 3 }]
+  }, cfg)
+  const json = toJSON(model, cfg)
+  assert.deepEqual(json.hosts.flatMap((h) => h.referers), [["https://news.example", 1]])
+  assert.equal(json.hosts.flatMap((h) => h.targets).reduce((t, [, n]) => t + n, 0), 8)
 })

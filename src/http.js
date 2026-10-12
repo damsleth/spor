@@ -2,6 +2,7 @@
 // (src/server.js): fail closed, auth first, no-store everywhere, the dashboard at / and the JSON
 // model at /api/report. A backend only supplies `rows`, the capped result sets build() expects.
 import { requireConfig, checkAuth, clampDays, validHost, parseFilters, span, build, render, toJSON } from "./report.js"
+import { LAND } from "./world.js"
 
 export const HEADERS = {
   "Cache-Control": "no-store",
@@ -45,7 +46,7 @@ export async function handle(request, { ready, password, open = false, spor, row
     if (url.pathname === "/api/report") {
       return new Response(JSON.stringify(toJSON(model, config, { days, host, filters })), { headers: { ...HEADERS, "Content-Type": "application/json; charset=utf-8" } })
     }
-    const html = render(model, { days, host, filters, config, cache, credit, generated: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC" })
+    const html = render(model, { days, host, filters, config, cache, credit, land: LAND, generated: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC" })
     return new Response(html, { headers: { ...HEADERS, "Content-Type": "text/html; charset=utf-8" } })
   } catch (error) {
     console.log(String(error))

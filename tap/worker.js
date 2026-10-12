@@ -3,7 +3,8 @@
 // request to the origin untouched (WebSockets and streaming included), and writes one Analytics
 // Engine data point with the schema every spor site shares:
 // indexes [host], blobs [path, refererOrigin, userAgent, country, status, botCategory, origin, method,
-// city, region, asn, asOrganization, visitor, ip], doubles [1]. No query string. A failed write
+// city, region, asn, asOrganization, visitor, ip, latitude, longitude], doubles [1]. Coordinates are
+// Cloudflare's for the city, rounded to 2 decimals (about 1 km). No query string. A failed write
 // never affects the response.
 // A route runs in front of a Worker's custom domain too, so wildcard routes count Worker sites as
 // well. vars.SELF_COUNTED lists the hosts whose own Worker already writes the point (snippets/):
@@ -20,6 +21,9 @@ function originOf(value) {
     return ""
   }
 }
+
+// a coordinate as text with 2 decimals, or "" when Cloudflare has none
+const coord = (v) => (v === undefined || v === null || v === "" || !Number.isFinite(Number(v)) ? "" : Number(v).toFixed(2))
 
 export function dataPoint(request, status, { visitor = "", ip = "" } = {}) {
   const url = new URL(request.url)
@@ -41,7 +45,9 @@ export function dataPoint(request, status, { visitor = "", ip = "" } = {}) {
       cf.asn ? String(cf.asn) : "",
       String(cf.asOrganization || "").slice(0, 64),
       visitor,
-      ip.slice(0, 45)
+      ip.slice(0, 45),
+      coord(cf.latitude),
+      coord(cf.longitude)
     ],
     doubles: [1]
   }
@@ -79,7 +85,8 @@ export async function visitorId(request, env, ip, now = Date.now()) {
   else return ""
   // the same input as spor's server hashes: the user agent as stored, the IP lowercased
   const ua = (request.headers.get("user-agent") || "").slice(0, 256)
-  const input = `${salt}|${day}|${new URL(request.url).hostname}|${ip.toLowerCase()}|${ua}`
+  // the host as the point stores it, without a trailing dot, so example.com. is the same visitor
+  const input = `${salt}|${day}|${new URL(request.url).hostname.replace(/\.$/, "")}|${ip.toLowerCase()}|${ua}`
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input))
   return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("")
 }

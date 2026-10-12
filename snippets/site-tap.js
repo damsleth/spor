@@ -1,7 +1,8 @@
 // spor tap: one Analytics Engine data point per page request (dataset spor_analytics), for a site
 // that is a Worker with static assets. Copy to the site as src/worker.js; see README.md here.
 // Schema shared with every spor site: indexes [host], blobs [path, refererOrigin, userAgent,
-// country, status, botCategory, origin, method, city, region, asn, asOrganization, visitor, ip],
+// country, status, botCategory, origin, method, city, region, asn, asOrganization, visitor, ip,
+// latitude, longitude],
 // doubles [1]. No query string. The IP and the visitor hash follow vars.RECORD_IP and a SALTS KV
 // binding exactly as in spor's tap/worker.js, which this copies.
 // run_worker_first in the wrangler config sends only page requests here; assets skip the Worker.
@@ -14,11 +15,15 @@ function originOf(value) {
   }
 }
 
+// a coordinate as text with 2 decimals, or "" when Cloudflare has none
+const coord = (v) => (v === undefined || v === null || v === "" || !Number.isFinite(Number(v)) ? "" : Number(v).toFixed(2))
+
 function dataPoint(request, status, { visitor = "", ip = "" } = {}) {
   const url = new URL(request.url)
   const cf = request.cf || {}
   return {
-    indexes: [url.hostname],
+    // one name per host: "example.com." (a fully qualified name some clients send) is example.com
+    indexes: [url.hostname.replace(/\.$/, "")],
     blobs: [
       url.pathname.slice(0, 64),
       originOf(request.headers.get("referer")),
@@ -33,7 +38,9 @@ function dataPoint(request, status, { visitor = "", ip = "" } = {}) {
       cf.asn ? String(cf.asn) : "",
       String(cf.asOrganization || "").slice(0, 64),
       visitor,
-      ip.slice(0, 45)
+      ip.slice(0, 45),
+      coord(cf.latitude),
+      coord(cf.longitude)
     ],
     doubles: [1]
   }
@@ -71,7 +78,8 @@ async function visitorId(request, env, ip, now = Date.now()) {
   else return ""
   // the same input as spor's server hashes: the user agent as stored, the IP lowercased
   const ua = (request.headers.get("user-agent") || "").slice(0, 256)
-  const input = `${salt}|${day}|${new URL(request.url).hostname}|${ip.toLowerCase()}|${ua}`
+  // the host as the point stores it, without a trailing dot, so example.com. is the same visitor
+  const input = `${salt}|${day}|${new URL(request.url).hostname.replace(/\.$/, "")}|${ip.toLowerCase()}|${ua}`
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input))
   return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("")
 }

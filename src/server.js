@@ -36,22 +36,25 @@ function originOf(value) {
 
 // every value is attacker-written: strings only, capped like the tap caps them
 // Control characters are dropped: SQLite's LIKE stops at a NUL, so the classes would disagree.
-function clean({ host, path, referer, ua, country, status, bot, origin, method, city, region, asn, asorg, visitor, ip }) {
+const COORD = /^-?\d{1,3}(\.\d{1,6})?$/
+function clean({ host, path, referer, ua, country, status, bot, origin, method, city, region, asn, asorg, visitor, ip, lat, lon }) {
   // eslint-disable-next-line no-control-regex
   const s = (v, max) => (typeof v === "string" ? v : v === undefined || v === null ? "" : String(v)).replace(/[\x00-\x1f\x7f]/g, "").slice(0, max)
   return {
     host: s(host, 253).toLowerCase().replace(/\.$/, ""), path: s(path, 64), referer: s(referer, 256), ua: s(ua, 256), country: s(country, 8),
     status: s(status, 3), bot: s(bot, 64), origin: s(origin, 256), method: s(method, 16),
     city: s(city, 64), region: s(region, 64), asn: /^\d{1,10}$/.test(s(asn, 10)) ? s(asn, 10) : "", asorg: s(asorg, 64),
-    visitor: /^[0-9a-f]{16}$/.test(s(visitor, 16)) ? s(visitor, 16) : "", ip: s(ip, 45).toLowerCase()
+    visitor: /^[0-9a-f]{16}$/.test(s(visitor, 16)) ? s(visitor, 16) : "", ip: s(ip, 45).toLowerCase(),
+    // coordinates as the tap writes them: text with 2 decimals
+    lat: COORD.test(s(lat, 12)) ? Number(lat).toFixed(2) : "", lon: COORD.test(s(lon, 12)) ? Number(lon).toFixed(2) : ""
   }
 }
 
 // the tap's Analytics Engine data point -> store fields
 export function fromDataPoint(point) {
   if (!point || !Array.isArray(point.indexes) || !Array.isArray(point.blobs)) return null
-  const [path, referer, ua, country, status, bot, origin, method, city, region, asn, asorg, visitor, ip] = point.blobs
-  return clean({ host: point.indexes[0], path, referer, ua, country, status, bot, origin, method, city, region, asn, asorg, visitor, ip })
+  const [path, referer, ua, country, status, bot, origin, method, city, region, asn, asorg, visitor, ip, lat, lon] = point.blobs
+  return clean({ host: point.indexes[0], path, referer, ua, country, status, bot, origin, method, city, region, asn, asorg, visitor, ip, lat, lon })
 }
 
 // A local point (nginx), finished like the tap finishes one: the network, and any country, region or
@@ -77,6 +80,8 @@ export function enrich(point, { geo = null, recordIp = false, now = Date.now() }
   return clean({
     ...point,
     country: point.country || found.country, region: point.region || found.region, city: point.city || found.city,
+    // Cloudflare's coordinates when nginx got them, else the lookup's
+    lat: point.lat || found.lat, lon: point.lon || found.lon,
     asn: found.asn || point.asn, asorg: found.asorg || point.asorg, visitor, ip: recordIp ? ip : ""
   })
 }
@@ -110,7 +115,7 @@ export function fromNginx(message) {
       host: e.host, path, referer: originOf(e.referer), ua: v(e.ua), country: v(e.country),
       status: e.status, bot: "", origin: originOf(e.origin), method: v(e.method),
       // Cloudflare's visitor-location headers, when that Managed Transform is on
-      city: v(e.city), region: v(e.region), ip: v(e.ip)
+      city: v(e.city), region: v(e.region), lat: v(e.lat), lon: v(e.lon), ip: v(e.ip)
     })
   }
 }

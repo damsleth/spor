@@ -19,7 +19,7 @@ test("tap passes the origin response through untouched and writes one redacted p
   assert.equal(forwarded, request, "the original request goes to the origin")
   assert.deepEqual(points, [{
     indexes: ["app.example.net"],
-    blobs: ["/floor/3", "https://example.com", "Mozilla/5.0", "", "207", "", "https://example.com", "POST", "", "", "", "", "", ""],
+    blobs: ["/floor/3", "https://example.com", "Mozilla/5.0", "", "207", "", "https://example.com", "POST", "", "", "", "", "", "", "", ""],
     doubles: [1]
   }])
   assert.doesNotMatch(JSON.stringify(points), /secret|token/)
@@ -49,7 +49,7 @@ test("long paths are cut to 64 characters", () => {
 
 const cfRequest = (headers = {}) => {
   const r = new Request("https://app.example.net/", { headers: { "user-agent": "Mozilla/5.0", "cf-connecting-ip": "203.0.113.7", ...headers } })
-  Object.defineProperty(r, "cf", { value: { country: "NO", city: "Oslo", region: "Oslo County", asn: 2119, asOrganization: "Telenor Norge AS" } })
+  Object.defineProperty(r, "cf", { value: { country: "NO", city: "Oslo", region: "Oslo County", asn: 2119, asOrganization: "Telenor Norge AS", latitude: "59.91333", longitude: "10.73897" } })
   return r
 }
 
@@ -57,7 +57,7 @@ test("by default the point has geo and network but no IP and no visitor hash", a
   globalThis.fetch = async () => new Response("ok")
   const points = []
   await tap.fetch(cfRequest(), { SPOR_ANALYTICS: { writeDataPoint: (p) => points.push(p) } })
-  assert.deepEqual(points[0].blobs.slice(8), ["Oslo", "Oslo County", "2119", "Telenor Norge AS", "", ""])
+  assert.deepEqual(points[0].blobs.slice(8), ["Oslo", "Oslo County", "2119", "Telenor Norge AS", "", "", "59.91", "10.74"])
   assert.doesNotMatch(JSON.stringify(points), /203\.0\.113\.7/)
 })
 
