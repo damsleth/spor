@@ -465,18 +465,26 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
   for (const r of origins) add(get(r.host).origins, r.origin, num(r.n))
   for (const r of geo) add(get(r.host).cities, [r.city, r.region, r.country].filter(Boolean).join(", "), num(r.n))
   // the map: every place in view (the places query skips the country and city filters, so the
-  // selection is highlighted, not alone); a result set without it falls back to the cities rows
+  // selection is highlighted, not alone); a result set without it falls back to the cities rows.
+  // Kept apart from the hosts: a place outside the filters must not add a host to the report.
+  const mapPlaces = new Map()
   for (const r of places || geo) {
-    const h = get(r.host)
     const lat = Number(r.lat)
     const lon = Number(r.lon)
     // rows from before coordinates have none ("" reads as 0, so both must be set)
     if (r.lat === "" || r.lon === "" || r.lat === undefined || !Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) continue
     // the place, not just the point: two cities can round to the same coordinates
     const key = `${lat.toFixed(2)},${lon.toFixed(2)}|${r.country || ""}|${r.city || ""}`
-    const p = h.places.get(key) || { lat, lon, n: 0, label: [r.city, r.region, r.country].filter(Boolean).join(", "), country: r.country || "", city: r.city || "" }
+    const p = mapPlaces.get(key) || { lat, lon, n: 0, label: [r.city, r.region, r.country].filter(Boolean).join(", "), country: r.country || "", city: r.city || "" }
     p.n += num(r.n)
-    h.places.set(key, p)
+    mapPlaces.set(key, p)
+    // per host too, for the API, only for hosts the filtered report has
+    const h = hosts.get(normalizeHost(r.host))
+    if (h) {
+      const q = h.places.get(key) || { ...p, n: 0 }
+      q.n += num(r.n)
+      h.places.set(key, q)
+    }
   }
   for (const r of networks) {
     const h = get(r.host)
@@ -506,6 +514,7 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
   const model = [...hosts.values()].sort((a, b) => b.requests - a.requests)
   // the detail query is capped: if it came back full, human counts are a lower bound
   model.partial = ok.length >= OK_LIMIT
+  model.places = mapPlaces
   model.hourly = hourly
   // the sinkhole view: bait by kind ("bait:env" -> n) and canary uses, newest first
   model.sinkkinds = new Map()
@@ -673,9 +682,12 @@ const mapX = (p) => (p.lon + 180) * 2
 const mapY = (p) => (84 - Math.max(-60, Math.min(84, p.lat))) * 2
 function worldMap(places, land, state) {
   if (!land || !places.size) return ""
-  const list = [...places.values()].sort((a, b) => b.n - a.n).slice(0, MAP_PLACES)
-  const max = list[0].n
   const picked = (p) => Boolean(state.country) && p.country === state.country && (!state.city || p.city === state.city)
+  // the selection always makes the map, then the busiest of the rest up to the cap
+  const all = [...places.values()].sort((a, b) => b.n - a.n)
+  const chosen = all.filter(picked).slice(0, MAP_PLACES)
+  const list = [...chosen, ...all.filter((p) => !picked(p)).slice(0, MAP_PLACES - chosen.length)].sort((a, b) => b.n - a.n)
+  const max = list[0].n
   const sel = list.filter(picked)
   // the view: the selection's bounds, padded, at least 18 degrees wide, at the map's 2.5:1
   let vb = [0, 0, 720, 288]
@@ -794,7 +806,7 @@ function combine(model, config, host = null) {
     services.set(name, s)
   }
   const multi = services.size > 1
-  const c = { services, multi, names: new Map(), hostnames: new Map(), places: new Map() }
+  const c = { services, multi, names: new Map(), hostnames: new Map(), places: model.places || new Map() }
   for (const k of ["requests", "pageviews", "visitors", "ok2xx", "bots"]) c[k] = model.reduce((t, h) => t + h[k], 0)
   for (const k of ["status", "daily", "visitorsDaily", "referers", "countries", "cities", "browsers", "networks", "classes", "agents", "ips", "origins", "pages", "probes", "targets"]) c[k] = new Map()
   for (const h of model) {
@@ -805,11 +817,6 @@ function combine(model, config, host = null) {
     merge(c.pages, h.pages, scoped)
     merge(c.probes, h.probes, scoped)
     for (const [k, v] of h.names) c.names.set(k, v)
-    for (const [k, p] of h.places) {
-      const q = c.places.get(k) || { ...p, n: 0 }
-      q.n += p.n
-      c.places.set(k, q)
-    }
     add(c.hostnames, h.host, h.requests)
   }
   return c
@@ -838,7 +845,7 @@ ${chartRow("Requests", c.requests, lineChart(c.daily, window, "requests", (day) 
 ${window[0].length > 10 ? "" : chartRow("Unique visitors", c.visitors, lineChart(c.visitorsDaily, window, "visitors", (day) => hrefFor(state, { day })))}
 ${statusPie(c.status)}
 <div class="grid">
-${c.multi ? table("services", services, { label: (k) => config.services[k] ? `${k} · ${config.services[k]}` : unitLabel(k), link: (k) => hrefFor(state, { host: k }) }) : ""}${named ? table("host names", c.hostnames, { link: (k) => hrefFor(state, { host: exact(k) }) }) : ""}${table("pages", c.pages, scoped)}${table("referers", c.referers)}${table("countries", c.countries, by("country"))}${table("cities", c.cities)}${table("browsers", c.browsers)}${table("networks", c.networks, { label: (asn) => `AS${asn} ${c.names.get(`as:${asn}`) || ""}`.trim(), ...by("asn") })}${table("bots and AI", c.classes, { label: classLabel, ...by("class") })}${table("agents", c.agents, { label: (k) => k.slice(tab(k) + 1), link: (k) => filterLink(state, "class", k.slice(0, tab(k))) })}${table("IP addresses", c.ips, { label: (ip) => `${ip} ${c.names.get(`ip:${ip}`) || ""}`.trim(), ...by("ip") })}${table("404s and probes", c.probes, scoped)}${table("proxy targets", c.targets)}${table("proxy callers (Origin)", c.origins)}
+${c.multi ? table("services", services, { label: (k) => config.services[k] ? `${k} · ${config.services[k]}` : unitLabel(k), link: (k) => hrefFor(state, { host: k }) }) : ""}${named ? table("host names", c.hostnames, { link: (k) => hrefFor(state, { host: exact(k) }) }) : ""}${table("pages", c.pages, scoped)}${table("referers", c.referers)}${table("countries", c.countries, { link: (k) => filterLink({ ...state, city: null }, "country", k) })}${table("cities", c.cities)}${table("browsers", c.browsers)}${table("networks", c.networks, { label: (asn) => `AS${asn} ${c.names.get(`as:${asn}`) || ""}`.trim(), ...by("asn") })}${table("bots and AI", c.classes, { label: classLabel, ...by("class") })}${table("agents", c.agents, { label: (k) => k.slice(tab(k) + 1), link: (k) => filterLink(state, "class", k.slice(0, tab(k))) })}${table("IP addresses", c.ips, { label: (ip) => `${ip} ${c.names.get(`ip:${ip}`) || ""}`.trim(), ...by("ip") })}${table("404s and probes", c.probes, scoped)}${table("proxy targets", c.targets)}${table("proxy callers (Origin)", c.origins)}
 </div>
 </section>`
 }
@@ -899,8 +906,8 @@ td.n{width:56px;text-align:right;font-variant-numeric:tabular-nums;padding-left:
 .chart .big{font-size:24px;font-weight:650;margin:0;font-variant-numeric:tabular-nums}.chart .cap{margin:0}
 .line{display:block;width:100%;height:auto;overflow:visible}.line .g{stroke:var(--line);stroke-dasharray:3 3}.line .ax{fill:var(--muted);font-size:11px}
 .line .area{fill:var(--accent-soft)}.line .stroke{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round}
-.pt .hit{fill:transparent}.pt .guide,.pt circle,.pt .ring,.tip{visibility:hidden;pointer-events:none}
-.pt:hover .guide,.pt:hover circle,.pt:hover .ring,.pt:hover .tip{visibility:visible}
+.pt .hit{fill:transparent}.pt .guide,.line .pt circle,.pt .ring,.tip{visibility:hidden;pointer-events:none}
+.pt:hover .guide,.line .pt:hover circle,.pt:hover .ring,.pt:hover .tip{visibility:visible}
 .line .guide{stroke:var(--muted);stroke-width:1}.line .pt circle{fill:var(--card);stroke:var(--accent);stroke-width:2}
 .tip rect{fill:var(--card);stroke:var(--line)}.tip text{fill:var(--fg);text-decoration:none}svg a,svg a:hover{text-decoration:none}
 .heat .ring{fill:none;stroke:var(--fg);stroke-width:.8}

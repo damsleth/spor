@@ -348,3 +348,24 @@ test("every line chart hit area stays inside the plot, edge to edge without gaps
     for (let i = 1; i < hits.length; i++) assert.ok(Math.abs(hits[i][0] - hits[i - 1][1]) < 0.2, `${days} days: no gap or overlap at ${i}`)
   }
 })
+
+test("map places outside the filters add no host, country links drop the city, and the cap keeps the selection", async () => {
+  const { LAND } = await import("../src/world.js")
+  const place = (host, country, city, lat, lon, n) => ({ host, country, region: "", city, lat, lon, n })
+  const filters = { country: "NO", city: "Oslo" }
+  const model = build({
+    totals: [{ host: "blog.example.com", status: "200", n: 4 }],
+    ok: [{ host: "blog.example.com", path: "/", ua: chrome, country: "NO", method: "GET", n: 4 }],
+    places: [place("blog.example.com", "NO", "Oslo", "59.91", "10.74", 4), place("app.example.net", "US", "Ashburn", "39.04", "-77.49", 50)]
+  }, config)
+  assert.deepEqual(model.map((h) => h.host), ["blog.example.com"], "Ashburn's host is not in the report")
+  const html = render(model, { days: 7, host: null, filters, config, generated: "x", land: LAND })
+  assert.match(html, /Ashburn/, "but Ashburn is on the map")
+  assert.match(html, /<a href="\?days=7&amp;country=NO">NO<\/a>/, "a country link drops the city")
+  const empty = build({ places: [place("app.example.net", "US", "Ashburn", "39.04", "-77.49", 50)] }, config)
+  assert.match(render(empty, { days: 7, host: null, filters, config, generated: "x", land: LAND }), /No data in this window/)
+  const many = Array.from({ length: 301 }, (_, i) => place("blog.example.com", i === 300 ? "NO" : "US", i === 300 ? "Oslo" : `C${i}`, "10.00", String(-170 + i), i === 300 ? 1 : 100))
+  const capped = render(build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }], places: many }, config), { days: 7, host: null, filters, config, generated: "x", land: LAND })
+  assert.match(capped, /class="sel"/, "the selected place makes the map though it is the 301st")
+  assert.equal((capped.match(/<circle cx/g) || []).length, 300)
+})
