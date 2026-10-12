@@ -496,6 +496,10 @@ test("the calendar picks a range in two clicks, links only days with data, and k
   assert.doesNotMatch(set, /class="cal"/, "no calendar once picked")
   assert.doesNotMatch(set, /aria-label="active filters"/, "the range is not a filter chip")
   assert.match(set, /href="\?days=7">7d</, "7d drops the range")
+  assert.match(view("from=2026-09-28&to=2026-10-05&day=2026-10-01"), /<b aria-current="true"><a href="\?days=7&amp;from=2026-09-28&amp;to=2026-10-05&amp;pick=from">/, "reopening the calendar drops a day drill-down, which would override the new range")
+  const feb = Date.parse("2027-02-12T12:00:00Z")
+  assert.deepEqual(parseFilters(new URLSearchParams("pick=from&cal=2026-13"), feb), { pick: "from" }, "no month 13, even inside the retention's span of months")
+  assert.equal(parseFilters(new URLSearchParams("cal=2026-12"), feb).cal, "2026-12")
 })
 
 test("the self-hosted store matches domains case-sensitively, like AE's LIKE", () => {

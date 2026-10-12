@@ -320,7 +320,7 @@ export function parseFilters(params, now = Date.now()) {
   else if (from) out.from = from
   // the calendar: which end is being picked, and its first month
   if (["from", "to"].includes(get("pick"))) out.pick = get("pick")
-  if (/^\d{4}-\d{2}$/.test(get("cal"))) {
+  if (/^\d{4}-(0[1-9]|1[0-2])$/.test(get("cal"))) {
     const first = new Date(today - (RETENTION_DAYS - 1) * 86400000).toISOString().slice(0, 7)
     const last = new Date(today).toISOString().slice(0, 7)
     if (get("cal") >= first && get("cal") <= last) out.cal = get("cal")
@@ -1189,7 +1189,7 @@ export function render(model, { days, host, filters = {}, generated, config, cac
   const clear = { day: null, from: null, to: null, pick: null, cal: null }
   const rangeLabel = custom ? (filters.from === filters.to ? filters.from.slice(5) : `${filters.from.slice(5)} – ${filters.to.slice(5)}`) : "custom"
   const dayLinks = [1, 7, 31].map((d) => d === days && !filters.day && !custom && !filters.pick ? `<b aria-current="true">${d}d</b>` : `<a href="${hrefFor(state, { days: d, ...clear })}">${d}d</a>`).join("")
-    + (custom || filters.pick ? `<b aria-current="true"><a href="${hrefFor(state, { pick: "from", cal: null })}">${escapeHtml(rangeLabel)}</a></b>` : `<a href="${hrefFor(state, { pick: "from", cal: null, day: null })}">custom</a>`)
+    + (custom || filters.pick ? `<b aria-current="true"><a href="${hrefFor(state, { pick: "from", cal: null, day: null })}">${escapeHtml(rangeLabel)}</a></b>` : `<a href="${hrefFor(state, { pick: "from", cal: null, day: null })}">custom</a>`)
   const sink = filters.view === "sink"
   const viewLinks = sink ? `<a href="${hrefFor(state, { view: null })}">traffic</a><b aria-current="true">sinkhole</b>` : `<b aria-current="true">traffic</b><a href="${hrefFor(state, { view: "sink" })}">sinkhole</a>`
   // every service seen in the window, busiest first; a chip adds its service to the selection or
