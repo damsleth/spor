@@ -24,7 +24,7 @@ test("SQL only ever interpolates a computed window start and an allowlisted host
     assert.match(sql, new RegExp(`toDateTime\\('${windowStart(7)}'\\)`))
     assert.match(sql, /index1 = 'blog\.example\.com'/)
     assert.match(sql, /FROM spor_analytics WHERE/)
-    assert.match(sql, /SUM\(_sample_interval\) AS n/)
+    assert.match(sql, /SUM\(_sample_interval\) AS n|count\(DISTINCT blob13\) AS v/)
     assert.match(sql, /FORMAT JSON$/)
   }
   const hostile = queries("7' OR 1=1 --", "x' OR '1'='1", config)
@@ -121,7 +121,7 @@ test("bot share is bots over all 2xx requests, taken from the uncapped totals", 
 
 test("empty user agents are excluded from the capped detail query, and a full cap is flagged", () => {
   assert.match(queries(7, null, config).ok, /blob3 != ''/)
-  assert.match(queries(7, null, config).ok, new RegExp(`ORDER BY n DESC, host, path, referer, ua, country, bot, method LIMIT ${OK_LIMIT} `))
+  assert.match(queries(7, null, config).ok, new RegExp(`ORDER BY n DESC, host, path, referer, ua, country, bot, method, asorg LIMIT ${OK_LIMIT} `))
   const full = Array.from({ length: OK_LIMIT }, (_, i) => ({ host: "blog.example.com", path: `/p${i}`, ua: chrome, method: "GET", n: 1 }))
   const model = build({ totals: [{ host: "blog.example.com", status: "200", n: OK_LIMIT }], ok: full }, config)
   assert.equal(model.partial, true)

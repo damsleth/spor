@@ -28,9 +28,19 @@ can change at its cutover: the tap sees requests that Cloudflare answers itself,
 sees requests that never pass Cloudflare.
 
 **Same numbers.** The store keeps hourly buckets with the AE columns. `src/store.js`
-answers the same five queries as `queries()` in `src/report.js`, with the same filters and
+answers the same capped queries as `queries()` in `src/report.js`, with the same filters and
 `LIMIT`s and a deterministic tie-break. `build()`, `render()` and `toJSON()` then run
 unchanged. Fed the same AE data, the two backends return identical reports.
+
+**Network, place and visitors for local hosts.** The tap gets the city, region, ASN and
+network name from Cloudflare. For nginx lines the server looks them up in a geo file built
+from [IPtoASN](https://iptoasn.com/) (public domain) and
+[DB-IP Lite](https://db-ip.com/db/lite.php) (CC BY 4.0, credited on the dashboard).
+It hashes host, IP and user agent with a salt that lives in memory for one UTC day, so a
+visitor counts once a day and the hashes can't be linked across days. The IP itself is
+stored only with `"recordIp": true` in `vars.SPOR`; the hash is then unsalted, as the tap's
+is with `RECORD_IP`. Cloudflare's visitor-location headers, when nginx gets them, win over
+the lookup for country, region and city.
 
 ## Configure
 
@@ -48,11 +58,12 @@ Environment, read from the process environment or `./.dev.vars`:
 | `DASHBOARD_PASSWORD` | (required) | Basic-auth password, the same as the Worker's |
 | `SPOR_AUTH` | (on) | `off` drops Basic auth on `/` and `/api/report`. Use it only when a private network alone can reach the server, such as the tailnet-only vhost below. `/api/ingest` keeps its token |
 | `SPOR_DB` | `spor.db` | SQLite file |
+| `SPOR_GEO_DB` | `geo.db` beside `SPOR_DB` | geo file from `spor geo update`; without it local points get no network or city |
 | `SPOR_LISTEN` | `127.0.0.1:2650` | HTTP address |
 | `SPOR_SYSLOG` | (off) | UDP address for nginx, e.g. `127.0.0.1:2651` |
 | `INGEST_TOKEN` | (off) | Bearer token for `POST /api/ingest` |
 | `CF_ACCOUNT_ID`, `CF_ANALYTICS_TOKEN` | (off) | AE pull (Account Analytics:Read) |
-| `SPOR_AE_SYNC_MINUTES` | `5` | AE pull interval |
+| `SPOR_AE_SYNC_MINUTES` | `5` | AE pull interval. After the backfill each pull is one query (the last few hours), about 300 of Workers Free's 10,000 AE reads a day; the dashboard costs 11 per uncached view |
 
 ## Install (systemd and nginx)
 
@@ -72,6 +83,11 @@ Environment, read from the process environment or `./.dev.vars`:
    add the syslog line there too.
 5. Install `nginx-spor-site.conf` with your dashboard host. Point its DNS at the machine's
    Tailscale IP, DNS only. Then run `nginx -t && systemctl reload nginx`.
+6. Build the geo file, then restart, and refresh it monthly (DB-IP publishes once a month).
+   It is about 900 MB and takes a minute or two:
+   `sudo node /opt/spor/spor/bin/spor.mjs geo update --db /var/lib/spor/geo.db && sudo systemctl restart spor`.
+   The new file is written beside the old one and renamed over it, so a failed download,
+   or one with far fewer ranges than usual, leaves the old one in place.
 
 Without nginx, `tailscale serve --bg 2650` publishes the dashboard on the machine's
 `ts.net` name instead.
@@ -90,9 +106,10 @@ Without nginx, `tailscale serve --bg 2650` publishes the dashboard on the machin
 
 ```bash
 curl -X POST https://stats.example.com/api/ingest -H "Authorization: Bearer $INGEST_TOKEN" \
-  -d '{"indexes":["pi.example.com"],"blobs":["/","","Mozilla/5.0 ...","NO","200","","","GET"],"doubles":[1]}'
+  -d '{"indexes":["pi.example.com"],"blobs":["/","","Mozilla/5.0 ...","NO","200","","","GET","Oslo","Oslo","2119","Telenor Norge AS","",""],"doubles":[1]}'
 ```
 
 The body is one data point or an array of up to 100, at most 64 KB. Every host must be in
 `local`. The server answers 204, or 400, 401 or 413. `dataPoint()` in `tap/worker.js`
-produces exactly this shape.
+produces exactly this shape. Points from before the six newer blobs (city through ip) still
+work; the missing ones are empty. The IP blob is dropped unless `recordIp` is on.

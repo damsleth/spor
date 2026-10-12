@@ -11,8 +11,17 @@ language.
 - **Free, with no card.** It runs on the Workers Free plan and Analytics Engine's
   free tier. No Cloudflare Pro, no Logpush, no Access.
 - **Private by default.** It records no IP and no query string, and reduces
-  referers to their origin. Attacker-written values are escaped under a
+  referers to their origin. Unique visitors come from a daily hash with a salt
+  that expires (a KV namespace), so hashes can't be linked across days. For your
+  own use you can store client IPs instead: `RECORD_IP` on the tap, `recordIp`
+  for the self-hosted server. Attacker-written values are escaped under a
   no-script CSP, and the dashboard is behind Basic auth.
+- **Who, not just how many.** Bots and AI agents are sorted into classes (AI
+  assistants fetching for a person, AI search, AI training, search engines,
+  scanners, scripts, browsers on cloud networks). City, region and network come
+  from Cloudflare, or for self-hosted hosts from IPtoASN and DB-IP Lite. Every
+  table row is a link that filters the whole dashboard: by day (then by the
+  hour), country, network, class, path or IP.
 - **Everything you host.** The pass-through `tap/` Worker counts anything behind
   the Cloudflare proxy, such as nginx on a VPS, a Pi on your tailnet or Azure.
   With wildcard routes it counts every proxied host in a zone, Worker sites

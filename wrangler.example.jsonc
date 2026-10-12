@@ -21,6 +21,8 @@
       },
       // hosts whose first path segment is a target host (shows "proxy targets/callers")
       "proxyHosts": ["proxy.example.com"],
+      // self-hosted server only: store client IPs from nginx and ingest (the tap has RECORD_IP)
+      "recordIp": false,
       // CLI only: command that answers `spor ask`, reads the prompt on stdin
       "llm": "claude -p"
     }

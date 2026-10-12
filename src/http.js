@@ -1,7 +1,7 @@
 // spor's HTTP surface, shared by the Worker (src/worker.js) and the self-hosted server
 // (src/server.js): fail closed, auth first, no-store everywhere, the dashboard at / and the JSON
-// model at /api/report. A backend only supplies `rows`, the five result sets build() expects.
-import { requireConfig, checkAuth, clampDays, validHost, build, render, toJSON } from "./report.js"
+// model at /api/report. A backend only supplies `rows`, the capped result sets build() expects.
+import { requireConfig, checkAuth, clampDays, validHost, parseFilters, span, build, render, toJSON } from "./report.js"
 
 export const HEADERS = {
   "Cache-Control": "no-store",
@@ -15,10 +15,11 @@ export function text(status, body, extra = {}) {
   return new Response(body, { status, headers: { ...HEADERS, "Content-Type": "text/plain; charset=utf-8", ...extra } })
 }
 
-// ready: every secret the backend needs is set. rows(days, host, config) resolves to
-// { totals, daily, ok, paths, origins }. source names the store in the 502 message.
+// ready: every secret the backend needs is set. rows(days, host, config, filters) resolves to the
+// result sets of queries() in src/report.js. source names the store in the 502 message, and credit
+// is an attribution line for the page footer.
 // open skips Basic auth; only the self-hosted server sets it, and only when told to (SPOR_AUTH=off).
-export async function handle(request, { ready, password, open = false, spor, rows, source, cache }) {
+export async function handle(request, { ready, password, open = false, spor, rows, source, cache, credit = "" }) {
   // fail closed: without every secret there is no dashboard, not an open one
   if (!ready || (!password && !open)) return text(503, "spor is not configured")
   if (!open && !checkAuth(request.headers.get("authorization"), password)) {
@@ -37,12 +38,14 @@ export async function handle(request, { ready, password, open = false, spor, row
   }
   const days = clampDays(url.searchParams.get("days"))
   const host = validHost(url.searchParams.get("host"), config)
+  // drill-down filters; invalid values are dropped (see parseFilters)
+  const filters = parseFilters(url.searchParams)
   try {
-    const model = build(await rows(days, host, config), config)
+    const model = build(await rows(days, host, config, filters), config, { hourly: span(days, filters).hourly, filtered: Boolean(filters.class) })
     if (url.pathname === "/api/report") {
-      return new Response(JSON.stringify(toJSON(model, config, { days, host })), { headers: { ...HEADERS, "Content-Type": "application/json; charset=utf-8" } })
+      return new Response(JSON.stringify(toJSON(model, config, { days, host, filters })), { headers: { ...HEADERS, "Content-Type": "application/json; charset=utf-8" } })
     }
-    const html = render(model, { days, host, config, cache, generated: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC" })
+    const html = render(model, { days, host, filters, config, cache, credit, generated: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC" })
     return new Response(html, { headers: { ...HEADERS, "Content-Type": "text/html; charset=utf-8" } })
   } catch (error) {
     console.log(String(error))

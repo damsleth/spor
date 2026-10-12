@@ -1,7 +1,11 @@
 import { test, beforeEach, afterEach } from "node:test"
 import assert from "node:assert/strict"
 import worker from "../src/worker.js"
-import { raw } from "./fixture-config.js"
+import { queries } from "../src/report.js"
+import { raw, config as fixtureConfig } from "./fixture-config.js"
+
+// one AE call per capped query
+const N = Object.keys(queries(7, null, fixtureConfig)).length
 
 const env = { DASHBOARD_PASSWORD: "pw", CF_ANALYTICS_TOKEN: "tok", CF_ACCOUNT_ID: "acct", SPOR: raw }
 const secrets = ["DASHBOARD_PASSWORD", "CF_ANALYTICS_TOKEN", "CF_ACCOUNT_ID"]
@@ -63,7 +67,7 @@ test("401 with a Basic challenge before touching Analytics Engine", async () => 
   assert.equal(calls.length, 0)
 })
 
-test("authenticated GET renders HTML with a strict CSP from five AE queries", async () => {
+test("authenticated GET renders HTML with a strict CSP from the capped AE queries", async () => {
   const res = await get("/?days=7")
   assert.equal(res.status, 200)
   assert.match(res.headers.get("content-type"), /text\/html/)
@@ -72,7 +76,7 @@ test("authenticated GET renders HTML with a strict CSP from five AE queries", as
   const html = await res.text()
   assert.match(html, /<h2>proxy\.example\.net <span class="desc">CORS proxy with allowlist and secret substitution<\/span><\/h2>/)
   assert.match(html, /https:\/\/a\.example/)
-  assert.equal(calls.length, 5)
+  assert.equal(calls.length, N)
   for (const c of calls) {
     assert.equal(c.url, "https://api.cloudflare.com/client/v4/accounts/acct/analytics_engine/sql")
     assert.equal(c.init.headers.Authorization, "Bearer tok")
@@ -97,15 +101,15 @@ test("cache: never touched before auth; warm hits skip AE; key isolates accounts
   assert.equal(mem.log.length, 0, "no cache access for unauthenticated requests")
 
   assert.equal((await get("/?days=7")).status, 200)
-  assert.equal(calls.length, 5)
-  assert.equal(mem.log.filter(([op]) => op === "put").length, 5)
+  assert.equal(calls.length, N)
+  assert.equal(mem.log.filter(([op]) => op === "put").length, N)
   assert.ok(mem.log.filter(([op]) => op === "put").every(([, , cc]) => cc === "max-age=300"))
 
   assert.equal((await get("/?days=7")).status, 200)
-  assert.equal(calls.length, 5, "a warm reload makes no AE calls")
+  assert.equal(calls.length, N, "a warm reload makes no AE calls")
 
   assert.equal((await get("/?days=7", auth, { ...env, CF_ACCOUNT_ID: "other" })).status, 200)
-  assert.equal(calls.length, 10, "another account never reads this account's cached rows")
+  assert.equal(calls.length, 2 * N, "another account never reads this account's cached rows")
 })
 
 test("GET /api/report returns the JSON model behind the same auth", async () => {

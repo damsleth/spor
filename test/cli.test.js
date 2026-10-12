@@ -1,5 +1,6 @@
 import { test, afterEach } from "node:test"
 import assert from "node:assert/strict"
+import { queries } from "../src/report.js"
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -55,7 +56,7 @@ test("report from a running instance uses /api/report with Basic auth", async ()
   assert.equal(seen.auth, `Basic ${Buffer.from("spor:pw").toString("base64")}`)
 })
 
-test("report straight from Analytics Engine runs the five queries and builds the same model", async () => {
+test("report straight from Analytics Engine runs every query and builds the same model", async () => {
   const { config } = await import("./fixture-config.js")
   const calls = []
   globalThis.fetch = async (url, init) => {
@@ -64,7 +65,7 @@ test("report straight from Analytics Engine runs the five queries and builds the
     return new Response(JSON.stringify({ data }), { status: 200 })
   }
   const report = await getReport({ secrets: { accountId: "acct", token: "tok" }, config, days: 7, host: null })
-  assert.equal(calls.length, 5)
+  assert.equal(calls.length, Object.keys(queries(7, null, config)).length)
   assert.ok(calls.every((u) => u === "https://api.cloudflare.com/client/v4/accounts/acct/analytics_engine/sql"))
   assert.equal(report.hosts[0].description, "personal tech blog")
   assert.match(formatReport(report), /blog\.example\.com\s+4 req/)

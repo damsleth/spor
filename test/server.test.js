@@ -4,7 +4,7 @@ import { createSocket } from "node:dgram"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { startServer, fromNginx, fromDataPoint, syncAE, aeWindowQuery, AE_RETENTION_DAYS } from "../src/server.js"
+import { startServer, fromNginx, fromDataPoint, syncAE, aeWindowQuery, AE_RETENTION_DAYS, AE_LIMIT } from "../src/server.js"
 import { openStore } from "../src/store.js"
 import { dataPoint } from "../tap/worker.js"
 import { config, raw } from "./fixture-config.js"
@@ -27,14 +27,14 @@ test("nginx syslog lines become store points: path without query, referer and or
   const line = `<190>Oct  6 10:35:35 spor: {"msec":"1791283000.123","host":"app.example.net","uri":"/a/b?token=secret","status":"200","referer":"https://news.example/item?id=1","ua":"${chrome}","country":"-","origin":"-","method":"GET"}`
   const e = fromNginx(line)
   assert.equal(e.seconds, 1791283000.123)
-  assert.deepEqual(e.point, { host: "app.example.net", path: "/a/b", referer: "https://news.example", ua: chrome, country: "", status: "200", bot: "", origin: "", method: "GET" })
+  assert.deepEqual(e.point, { host: "app.example.net", path: "/a/b", referer: "https://news.example", ua: chrome, country: "", status: "200", bot: "", origin: "", method: "GET", city: "", region: "", asn: "", asorg: "", visitor: "", ip: "" })
   for (const bad of ["<190>no json here", "<190>spor: {broken", "<190>spor: null"]) assert.equal(fromNginx(bad), null, bad)
   assert.equal(fromNginx(`{"host":"a","uri":"/${"x".repeat(200)}"}`).point.path.length, 64)
 })
 
 test("the tap's own data point is a valid ingest body", () => {
   const request = new Request("https://app.example.net/page?q=1", { headers: { referer: "https://r.example/x", "user-agent": chrome } })
-  assert.deepEqual(fromDataPoint(dataPoint(request, 200)), { host: "app.example.net", path: "/page", referer: "https://r.example", ua: chrome, country: "", status: "200", bot: "", origin: "", method: "GET" })
+  assert.deepEqual(fromDataPoint(dataPoint(request, 200)), { host: "app.example.net", path: "/page", referer: "https://r.example", ua: chrome, country: "", status: "200", bot: "", origin: "", method: "GET", city: "", region: "", asn: "", asorg: "", visitor: "", ip: "" })
   for (const bad of [null, {}, { indexes: "x", blobs: [] }]) assert.equal(fromDataPoint(bad), null)
 })
 
@@ -119,15 +119,16 @@ test("nginx datagrams on SPOR_SYSLOG are counted for local hosts only", async ()
   })
 })
 
-test("AE sync: backfills the retention a day at a time, then re-pulls two days; hours are parsed as UTC", async () => {
+test("AE sync: backfills the retention a day at a time, then re-pulls recent hours in one query; hours are UTC", async () => {
   const store = openStore()
   const now = Date.parse("2026-10-06T12:00:00Z") / 1000
   const queries = []
   const fetchImpl = async (url, init) => {
     queries.push(init.body)
     assert.equal(init.headers.Authorization, "Bearer tok")
-    // AE answers n as a string and hour as "YYYY-MM-DD HH:MM:SS" in UTC
-    const data = init.body.includes("timestamp >= toDateTime('2026-10-06 00:00:00')")
+    // AE answers n as a string and hour as "YYYY-MM-DD HH:MM:SS" in UTC; the one point is at 09:00
+    const [from, to] = [...init.body.matchAll(/toDateTime\('([^']+)'\)/g)].map((m) => m[1])
+    const data = from <= "2026-10-06 09:00:00" && "2026-10-06 09:00:00" < to
       ? [{ hour: "2026-10-06 09:00:00", host: "blog.example.com", path: "/", referer: "", ua: chrome, country: "NO", status: "200", bot: "", origin: "", method: "GET", n: "4" }]
       : []
     return new Response(JSON.stringify({ data }))
@@ -138,7 +139,8 @@ test("AE sync: backfills the retention a day at a time, then re-pulls two days; 
   assert.deepEqual(store.db.prepare("SELECT hour, n FROM hits").all().map((r) => ({ ...r })), [{ hour: Date.parse("2026-10-06T09:00:00Z") / 1000, n: 4 }])
   queries.length = 0
   await syncAE(store, secrets, config, { now, fetchImpl })
-  assert.equal(queries.length, 2, "yesterday and today")
+  assert.equal(queries.length, 1, "one query from three hours before the last sync to now")
+  assert.match(queries[0], /toDateTime\('2026-10-06 09:00:00'\) AND timestamp < toDateTime\('2026-10-06 13:00:00'\)/)
   assert.equal(store.db.prepare("SELECT SUM(n) AS n FROM hits").get().n, 4, "a re-pull replaces, never doubles")
 })
 
@@ -147,4 +149,17 @@ test("the AE window query only interpolates computed times and a validated datas
   assert.match(q, /timestamp >= toDateTime\('1970-01-01 00:00:00'\) AND timestamp < toDateTime\('1970-01-01 01:00:00'\)/)
   assert.match(q, /SUM\(_sample_interval\) AS n/)
   assert.throws(() => aeWindowQuery("x; DROP", 0, 1))
+})
+
+test("AE sync after long downtime never reaches past AE's retention", async () => {
+  const store = openStore()
+  const now = Date.parse("2026-10-06T12:00:00Z") / 1000
+  store.setMeta("ae:synced", now - 500 * 86400)
+  let reads = 0
+  // every window comes back full, the worst case: each day splits into hours
+  const full = Array.from({ length: AE_LIMIT }, () => ({ hour: "2020-01-01 00:00:00", host: "blog.example.com", n: "1" }))
+  const fetchImpl = async () => { reads++; return new Response(JSON.stringify({ data: full.slice(0, reads % 25 === 1 ? AE_LIMIT : 0) })) }
+  await syncAE(store, { accountId: "a", token: "t" }, config, { now, fetchImpl })
+  assert.ok(reads <= (AE_RETENTION_DAYS + 1) * 25, `${reads} reads`)
+  assert.equal(Number(store.meta("ae:synced")), Math.floor(now / 3600) * 3600)
 })

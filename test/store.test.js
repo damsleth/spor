@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { openStore, HOUR } from "../src/store.js"
-import { build, toJSON, OK_LIMIT } from "../src/report.js"
+import { build, toJSON, queries, OK_LIMIT } from "../src/report.js"
 import { config } from "./fixture-config.js"
 
 const chrome = "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/140.0 Safari/537.36"
@@ -53,7 +53,7 @@ test("replaceAE replaces only AE rows in its window and never the hours a local 
   ])
 })
 
-test("rows() answers the five AE result sets with the same filters, and build() counts them", () => {
+test("rows() answers the AE result sets with the same filters, and build() counts them", () => {
   const s = openStore()
   const h = Math.floor(T / HOUR) * HOUR
   const day = 86400
@@ -66,7 +66,7 @@ test("rows() answers the five AE result sets with the same filters, and build() 
     { hour: h - 10 * day, ...page({ host: "blog.example.com" }), n: 100 }
   ])
   const r = s.rows(7, null, config, NOW)
-  assert.deepEqual(Object.keys(r), ["totals", "daily", "ok", "paths", "origins"])
+  assert.deepEqual(Object.keys(r), Object.keys(queries(7, null, config, NOW)))
   assert.ok(r.daily.every((x) => /^\d{4}-\d{2}-\d{2}$/.test(x.day)))
   assert.ok(r.ok.every((x) => x.ua !== ""), "empty user agents never reach the detail rows, as in AE")
   assert.deepEqual(plain(r.origins), [{ host: "proxy.example.net", origin: "https://caller.example", n: 3 }])

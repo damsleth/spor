@@ -14,6 +14,9 @@
   "routes": [
     { "pattern": "app.example.com/*", "zone_name": "example.com" }
   ],
-  "vars": { "SELF_COUNTED": [] },
+  // RECORD_IP: true stores client IPs (and makes the visitor hash unsalted). Without it, bind a
+  // KV namespace as SALTS for daily unique visitors with an expiring salt:
+  // "kv_namespaces": [{ "binding": "SALTS", "id": "<npx wrangler kv namespace create spor-salts>" }]
+  "vars": { "SELF_COUNTED": [], "RECORD_IP": false },
   "analytics_engine_datasets": [{ "binding": "SPOR_ANALYTICS", "dataset": "spor_analytics" }]
 }

@@ -1,6 +1,6 @@
 {
   "name": "spor",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Stats for everything you host at home, at 0 kr: Cloudflare Workers + Analytics Engine or self-hosted SQLite, dashboard, API, CLI",
   "license": "MIT",
   "private": true,

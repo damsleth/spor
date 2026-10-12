@@ -37,8 +37,8 @@ export default {
       password: env.DASHBOARD_PASSWORD,
       spor: env.SPOR,
       source: "Analytics Engine",
-      rows: async (days, host, config) => {
-        const q = queries(days, host, config)
+      rows: async (days, host, config, filters) => {
+        const q = queries(days, host, config, Date.now(), filters)
         const names = Object.keys(q)
         const results = await Promise.all(names.map((name) => sql(env, origin, q[name])))
         return Object.fromEntries(names.map((name, i) => [name, results[i]]))

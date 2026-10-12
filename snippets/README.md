@@ -34,13 +34,16 @@ forwarding `ctx` so `ctx.waitUntil()` and `ctx.passThroughOnException()` keep wo
 export default {
   async fetch(request, env, ctx) {
     const response = await site.fetch(request, env, ctx)
-    try { env.SPOR_ANALYTICS?.writeDataPoint(dataPoint(request, response.status)) } catch {}
+    ctx.waitUntil(record(request, response.status, env))
     return response
   }
 }
 ```
 
-with `dataPoint` copied from `../tap/worker.js`. Never record the query string or the client IP.
+with `record`, `dataPoint`, `visitorId` and their helpers copied from `site-tap.js`. Never
+record the query string. The client IP is written only with `"RECORD_IP": true` in the site's
+`vars`; the daily visitor hash needs that or a `SALTS` KV namespace binding (see
+`tap/worker.js`).
 
 **Hash-routed single-page apps** (`/#/post/x`): the fragment never reaches the server, and
 Cloudflare Web Analytics strips it too. So the client reports the route itself, on load and on
@@ -91,7 +94,7 @@ if (url.pathname === "/api/spor" && request.method === "POST") {
   let route
   try { route = JSON.parse(body).route } catch {}
   if (typeof route !== "string" || !/^\/(about|post\/[a-z0-9-]{1,120})?$/.test(route)) return new Response(null, { status: 400 })
-  const point = dataPoint(request, 200)
+  const point = dataPoint(request, 200, { ip: env.RECORD_IP === true ? request.headers.get("cf-connecting-ip") || "" : "" })
   point.blobs[0] = `/#${route}`
   point.blobs[7] = "VIEW"
   try { env.SPOR_ANALYTICS?.writeDataPoint(point) } catch {}

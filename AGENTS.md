@@ -61,17 +61,28 @@ count, and a dashboard hostname. Everything else is checkable.
 ## Rules for changing spor
 
 - **Two backends, one report.** `src/http.js` holds everything both backends serve. A
-  backend supplies only the five result sets. `src/store.js` mirrors `queries()`: the
-  same filters, `LIMIT`s and tie-break. Change one and you change the other. The
+  backend supplies only the result sets of `queries()`. `src/store.js` mirrors `queries()`:
+  the same filters, `LIMIT`s and tie-break. Change one and you change the other. The
   self-hosted backend must give the same `/api/report` as the Worker on the same AE data.
-- **Workers Free gives 10 ms of CPU per request.** Aggregate in SQL (five capped
-  queries) and only classify and render in JavaScript. Keep the `LIMIT`s.
+- **Workers Free gives 10 ms of CPU per request and 10,000 AE reads a day.** Aggregate in
+  SQL (eleven capped queries, one AE read each, cached 5 minutes) and only classify and
+  render in JavaScript. Keep the `LIMIT`s. Warm, a 31-day report costs about 5 ms.
+- **Agent classes live in one table.** `CLASSES` in `src/report.js` drives `classOf()` and
+  `classSql()`, so a class filter, the bots card and the human counts agree in JavaScript,
+  AE and SQLite. Tokens are lowercase-matched substrings without quotes or wildcards. Put a
+  narrower class before a broader one (Claude-User carries `claudebot@` in its user agent).
+- **The data point has 14 blobs** (see `tap/worker.js`). The IP is written only with
+  `RECORD_IP` (tap) or `recordIp` (server); the visitor hash only with a salt (a `SALTS`
+  KV namespace, or the server's in-memory daily salt) or with the IP recording on.
 - **Every stored value is attacker-written.** Escape everything you render with
   `escapeHtml`, and keep the no-script CSP (`default-src 'none'; style-src
   'unsafe-inline'`): no external CSS, fonts or JavaScript. Inline SVG is fine.
 - **Only validated values reach SQL:** `days` is an integer from 1 to 31, `host`
-  must be a configured host, and `dataset` must match `[A-Za-z0-9_]+`. SQLite gets
-  bound parameters.
+  must be a configured host, and `dataset` must match `[A-Za-z0-9_]+`. Filters
+  (`parseFilters`) are dropped unless they match: `country` `[A-Z0-9]{2}`, `asn` digits,
+  `day` a real date within AE's 92 days, `class` a class id, `path` printable ASCII
+  without `'` or `\`, `ip` an IPv4 or IPv6 address. AE SQL has no bound parameters, so
+  nothing is escaped, only rejected. SQLite gets bound parameters.
 - **Local sources accept only `vars.SPOR.local` hosts.** nginx logs `$server_name`, not
   the Host header, and `/api/ingest` needs its Bearer token.
 - **Fail closed.** Missing secrets or an invalid config return 503. Auth comes
@@ -81,5 +92,5 @@ count, and a dashboard hostname. Everything else is checkable.
 - **No instance data in this repo:** no real hostnames, descriptions or account IDs.
   Tests use `test/fixture-config.js`.
 - `src/report.js` stays import-free, so `node:test` loads it directly. The server uses
-  Node built-ins only (`node:sqlite`, `node:http`, `node:dgram`). Run `npm test` before
-  every commit; it needs no network.
+  Node built-ins only (`node:sqlite`, `node:http`, `node:dgram`, `node:zlib`). Run
+  `npm test` before every commit; it needs no network.
