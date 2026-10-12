@@ -25,6 +25,8 @@ const hourOf = (seconds) => Math.floor(seconds / HOUR) * HOUR
 export function openStore(file = ":memory:") {
   const db = new DatabaseSync(file)
   db.exec("PRAGMA journal_mode = WAL")
+  // AE's LIKE is case-sensitive; SQLite's isn't by default, and *.domain hosts match with LIKE
+  db.exec("PRAGMA case_sensitive_like = ON")
   const columns = db.prepare("SELECT name FROM pragma_table_info('hits')").all().map((r) => r.name)
   const kept = FIELDS.filter((f) => columns.includes(f))
   if (columns.length && kept.length < FIELDS.length) {

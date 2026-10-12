@@ -462,3 +462,51 @@ test("a domain selection covers the domain and every name under it, in both back
   const quiet = render(build({ totals: [{ host: "other.net", status: "200", n: 1 }] }, config), { days: 1, host: "*.example.com", config, generated: "x", today: "2026-10-06" })
   assert.match(quiet, /class="sel" href="\?days=1"[^>]*>example\.com ×/, "a selected domain without traffic keeps its chip, to drop it")
 })
+
+test("a custom range: real dates within AE's 92 days, swapped if backwards, and its step", async () => {
+  const { span, stepHours } = await import("../src/report.js")
+  const now = Date.parse("2026-10-12T15:00:00Z")
+  const f = (q) => parseFilters(new URLSearchParams(q), now)
+  assert.deepEqual(f("from=2026-10-05&to=2026-09-28"), { from: "2026-09-28", to: "2026-10-05" })
+  assert.deepEqual(f("from=2026-10-05&pick=to&cal=2026-09"), { from: "2026-10-05", pick: "to", cal: "2026-09" })
+  for (const bad of ["from=2026-10-13&to=2026-10-14", "from=2026-07-01&to=2026-07-02", "from=2026-02-30&to=2026-03-01", "from=x' OR 1&to=2026-10-01", "pick=both", "cal=2026-06", "cal=2026-11", "cal=2026-9"]) assert.deepEqual(f(bad), {}, bad)
+  assert.deepEqual(span(7, f("from=2026-10-01&to=2026-10-03")), { from: "2026-10-01 00:00:00", to: "2026-10-04 00:00:00", fromSeconds: Date.parse("2026-10-01") / 1000, toSeconds: Date.parse("2026-10-04") / 1000, hourly: false, step: 1 })
+  assert.deepEqual([["2026-10-01", "2026-10-07"], ["2026-10-01", "2026-10-08"], ["2026-09-01", "2026-10-01"], ["2026-08-31", "2026-10-01"]].map(([from, to]) => stepHours(7, { from, to })), [1, 6, 6, 24])
+  assert.equal(span(1, f("from=2026-10-05&to=2026-10-05")).hourly, true, "a range of one day is that day")
+})
+
+test("the calendar picks a range in two clicks, links only days with data, and keeps the range out of the chips", () => {
+  const today = "2026-10-12"
+  const now = Date.parse("2026-10-12T15:00:00Z")
+  const view = (q) => render(build({}, config), { days: 7, filters: parseFilters(new URLSearchParams(q), now), config, generated: "x", today })
+  const first = view("pick=from")
+  assert.match(first, /September 2026.*October 2026/s, "the month before today's, then today's")
+  assert.match(first, /href="\?days=7&amp;from=2026-10-05&amp;pick=to&amp;cal=2026-09">5</, "the first click sets from and asks for to")
+  assert.doesNotMatch(first, /from=2026-10-13/, "no days after today")
+  assert.match(first, /<td class="out"><span>28<\/span><\/td>/, "the other months' days are gray and not links")
+  assert.doesNotMatch(first, /aria-label="later months"/, "nothing after today's month")
+  assert.match(first, /aria-label="earlier months"/)
+  const second = view("from=2026-10-05&pick=to&cal=2026-09")
+  assert.match(second, /<td class="end"><a[^>]*>5</, "from is marked")
+  assert.match(second, /href="\?days=7&amp;from=2026-10-05&amp;to=2026-10-08">8</, "a later day ends the range")
+  assert.match(second, /href="\?days=7&amp;from=2026-10-01&amp;pick=to&amp;cal=2026-09">1</, "an earlier day starts it again")
+  const set = view("from=2026-09-28&to=2026-10-05")
+  assert.match(set, /<b aria-current="true"><a href="[^"]*pick=from[^"]*">09-28 – 10-05<\/a><\/b>/, "the segment shows the range, and reopens the calendar")
+  assert.match(set, /2026-09-28 – 2026-10-05/)
+  assert.doesNotMatch(set, /class="cal"/, "no calendar once picked")
+  assert.doesNotMatch(set, /aria-label="active filters"/, "the range is not a filter chip")
+  assert.match(set, /href="\?days=7">7d</, "7d drops the range")
+})
+
+test("the self-hosted store matches domains case-sensitively, like AE's LIKE", () => {
+  const s = openStore()
+  const now = Date.parse("2026-10-06T12:30:00Z")
+  const h = Math.floor(now / 1000 / HOUR) * HOUR
+  s.replaceAE(h - HOUR, h + HOUR, [{ hour: h, host: "blog.example.com", path: "/", ua: chrome, status: "200", n: 1 }, { hour: h, host: "blog.EXAMPLE.COM", path: "/", ua: chrome, status: "200", n: 2 }])
+  assert.deepEqual(build(s.rows(1, "*.example.com", config, now), config).map((x) => [x.host, x.requests]), [["blog.example.com", 1]])
+})
+
+test("a domain with only its apex still gets a domain chip, which differs from the apex with aliases", () => {
+  const html = render(build({ totals: [{ host: "example.com", status: "200", n: 1 }] }, config), { days: 1, config, generated: "x", today: "2026-10-06" })
+  assert.match(html, /<span class="dom"><a href="\?days=1&amp;host=\*\.example\.com">example\.com<\/a><a href="\?days=1&amp;host=example\.com"[^>]*>@<\/a><\/span>/)
+})

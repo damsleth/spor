@@ -256,7 +256,9 @@ export function windowStart(days, now = Date.now()) {
 // Drill-down filters from the query string. Analytics Engine SQL has no bound parameters, so every
 // value that reaches it matches a pattern without quotes, backslashes or whitespace; anything
 // else is dropped, never escaped. SQLite gets the same values as bound parameters.
-export const FILTER_KEYS = ["view", "day", "country", "city", "asn", "class", "path", "ip"]
+export const FILTER_KEYS = ["view", "from", "to", "pick", "cal", "day", "country", "city", "asn", "class", "path", "ip"]
+// the window and the calendar's state: carried in links, never shown as filter chips
+const RANGE_KEYS = ["from", "to", "pick", "cal"]
 
 function v4hex(ip) {
   const parts = ip.split(".")
@@ -302,11 +304,26 @@ export function parseFilters(params, now = Date.now()) {
     return typeof v === "string" ? v : ""
   }
   const out = {}
-  const day = get("day")
-  if (/^\d{4}-\d{2}-\d{2}$/.test(day)) {
-    const t = Date.parse(`${day}T00:00:00Z`)
-    const today = Date.parse(new Date(now).toISOString().slice(0, 10) + "T00:00:00Z")
-    if (Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === day && t <= today && t > today - RETENTION_DAYS * 86400000) out.day = day
+  const today = Date.parse(new Date(now).toISOString().slice(0, 10) + "T00:00:00Z")
+  // a real date, not after today and within AE's 92 days
+  const date = (v) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return ""
+    const t = Date.parse(`${v}T00:00:00Z`)
+    return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === v && t <= today && t > today - RETENTION_DAYS * 86400000 ? v : ""
+  }
+  if (date(get("day"))) out.day = get("day")
+  // a custom window, from and to inclusive (swapped if given backwards); from alone is a range
+  // being picked
+  const from = date(get("from"))
+  const to = date(get("to"))
+  if (from && to) [out.from, out.to] = from <= to ? [from, to] : [to, from]
+  else if (from) out.from = from
+  // the calendar: which end is being picked, and its first month
+  if (["from", "to"].includes(get("pick"))) out.pick = get("pick")
+  if (/^\d{4}-\d{2}$/.test(get("cal"))) {
+    const first = new Date(today - (RETENTION_DAYS - 1) * 86400000).toISOString().slice(0, 7)
+    const last = new Date(today).toISOString().slice(0, 7)
+    if (get("cal") >= first && get("cal") <= last) out.cal = get("cal")
   }
   if (/^[A-Z0-9]{2}$/.test(get("country"))) out.country = get("country")
   // a city name as Cloudflare or DB-IP writes it: letters in any script, digits, spaces and .,()-
@@ -327,12 +344,23 @@ export function parseFilters(params, now = Date.now()) {
 
 // The window: whole UTC days ending today, or the one day a day filter names. step is the hours
 // per point of the requests chart: 1 up to a week, 6 beyond (124 points for 31 days)
-export const stepHours = (days, filters = {}) => (filters.day || clampDays(String(days)) <= 7 ? 1 : 6)
+// how many days the window spans: a day filter one, a custom range its days, else days
+export const spanDays = (days, filters = {}) => (filters.day ? 1 : filters.from && filters.to ? Math.round((Date.parse(filters.to) - Date.parse(filters.from)) / 86400000) + 1 : clampDays(String(days)))
+// hours per point of the time charts: 1 up to a week, 6 up to a month, 24 beyond
+export const stepHours = (days, filters = {}) => {
+  const n = spanDays(days, filters)
+  return n <= 7 ? 1 : n <= 31 ? 6 : 24
+}
 export function span(days, filters = {}, now = Date.now()) {
   const sql = (t) => new Date(t).toISOString().slice(0, 19).replace("T", " ")
   if (filters.day) {
     const from = Date.parse(`${filters.day}T00:00:00Z`)
     return { from: sql(from), to: sql(from + 86400000), fromSeconds: from / 1000, toSeconds: from / 1000 + 86400, hourly: true, step: 1 }
+  }
+  if (filters.from && filters.to) {
+    const from = Date.parse(`${filters.from}T00:00:00Z`)
+    const to = Date.parse(`${filters.to}T00:00:00Z`) + 86400000
+    return { from: sql(from), to: sql(to), fromSeconds: from / 1000, toSeconds: to / 1000, hourly: filters.from === filters.to, step: stepHours(days, filters) }
   }
   const from = Date.parse(windowStart(days, now).replace(" ", "T") + "Z")
   const to = Date.parse(new Date(now).toISOString().slice(0, 10) + "T00:00:00Z") + 86400000
@@ -992,8 +1020,8 @@ ${c.multi ? table("services", services, { label: (k) => config.services[k] ? `${
 </section>`
 }
 
-const CSS = `:root{color-scheme:light dark;--bg:#f6f7f9;--card:#fff;--fg:#14171f;--muted:#5d6572;--line:#e6e8ec;--soft:#f0f2f5;--accent:#2f62d9;--accent-soft:rgba(47,98,217,.12);--c2:#2a8f5b;--c3:#2f62d9;--c4:#c27a10;--c5:#cc3b3b;--co:#8a919d;--sel:#e8710a}
-@media (prefers-color-scheme:dark){:root{--bg:#0d0f14;--card:#161a22;--fg:#e9ecf2;--muted:#9aa3b2;--line:#262b36;--soft:#1d222c;--accent:#7aa2ff;--accent-soft:rgba(122,162,255,.16);--c2:#4fc08a;--c3:#7aa2ff;--c4:#e0a43c;--c5:#f0716f;--co:#8a919d;--sel:#f5a04a}}
+const CSS = `:root{color-scheme:light dark;--bg:#f6f7f9;--card:#fff;--fg:#14171f;--muted:#5d6572;--line:#e6e8ec;--soft:#f0f2f5;--accent:#2f62d9;--accent-soft:rgba(47,98,217,.12);--c2:#2a8f5b;--c3:#2f62d9;--c4:#c27a10;--c5:#cc3b3b;--co:#8a919d;--sel:#e8710a;--range:#34495e;--range-fg:#aeb8c4;--range-end:#e74c3c}
+@media (prefers-color-scheme:dark){:root{--bg:#0d0f14;--card:#161a22;--fg:#e9ecf2;--muted:#9aa3b2;--line:#262b36;--soft:#1d222c;--accent:#7aa2ff;--accent-soft:rgba(122,162,255,.16);--c2:#4fc08a;--c3:#7aa2ff;--c4:#e0a43c;--c5:#f0716f;--co:#8a919d;--sel:#f5a04a;--range:#34495e;--range-fg:#c8d0da;--range-end:#e74c3c}}
 *{box-sizing:border-box}
 body{margin:0 auto;max-width:1120px;padding:24px 16px 48px;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
 a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
@@ -1046,6 +1074,15 @@ td.n{width:56px;text-align:right;font-variant-numeric:tabular-nums;padding-left:
 .cell a{color:inherit}.cell a:hover{color:var(--accent)}
 .spark a rect{cursor:pointer}
 .foot{font-size:12px;margin-top:24px}
+.cal{display:flex;flex-wrap:wrap;gap:16px 32px}.cal .mon{width:280px}.cal table{width:280px;table-layout:fixed;border-collapse:collapse}
+.cal .head{display:flex;align-items:center;justify-content:space-between;font-size:15px;font-weight:500;padding:0 0 8px}
+.cal .nav{display:inline-flex;width:26px;height:26px;border-radius:50%;align-items:center;justify-content:center;background:var(--line);color:var(--muted);font-size:11px}.cal a.nav:hover{text-decoration:none;color:var(--fg)}
+.cal th{font-size:13px;font-weight:600;padding:4px 0;text-align:center}
+.cal td{padding:0;text-align:center}.cal td a,.cal td span{display:block;line-height:36px;color:var(--fg)}
+.seg b a{color:inherit}.cal td a:hover{text-decoration:none;background:var(--soft)}
+.cal td.out span{color:var(--muted);opacity:.5}.cal span.nav{visibility:hidden}.cal td.off span{opacity:.35}
+.cal td.in{background:var(--range)}.cal td.in a{color:var(--range-fg)}.cal td.in a:hover{background:transparent}
+.cal td.end{background:var(--range-end)}.cal td.end a{color:#fff;font-weight:600}
 .chart{display:grid;grid-template-columns:140px 1fr;gap:12px;align-items:center;border-top:1px solid var(--line);padding:10px 0}.chart:first-of-type{border-top:0}
 .chart .big{font-size:24px;font-weight:650;margin:0;font-variant-numeric:tabular-nums}.chart .cap{margin:0}.chart .unit{margin:0;font-size:12px}
 .line{display:block;width:100%;height:auto;overflow:visible}.line .g{stroke:var(--line);stroke-dasharray:3 3}.line .ax{fill:var(--muted);font-size:11px}
@@ -1090,16 +1127,69 @@ ${uses.length ? `<table class="alerts"><caption>canary alerts</caption><tr><th>h
 </section>`
 }
 
+// ---- calendar ------------------------------------------------------------------------------
+// The custom range picker: two months side by side, Monday first, like the heatmap. Every day is a
+// link: with pick=from it starts a range (and asks for its end), with pick=to it ends it (a day
+// before the start starts over). The range is dark, its ends red, other months' days grey, days
+// outside AE's 92 days or after today not links. No script: the page reloads per click.
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+const addMonths = (ym, k) => {
+  const [y, m] = ym.split("-").map(Number)
+  return new Date(Date.UTC(y, m - 1 + k, 1)).toISOString().slice(0, 7)
+}
+const addDays = (day, k) => new Date(Date.parse(`${day}T00:00:00Z`) + k * 86400000).toISOString().slice(0, 10)
+function calendar(state, today) {
+  const oldest = addDays(today, -(RETENTION_DAYS - 1))
+  const firstMonth = oldest.slice(0, 7)
+  const lastLeft = addMonths(today.slice(0, 7), -1) < firstMonth ? firstMonth : addMonths(today.slice(0, 7), -1)
+  // the left month: as asked, else the one before the range's end (so it shows on the right)
+  let left = state.cal || addMonths((state.to || state.from || today).slice(0, 7), -1)
+  if (left < firstMonth) left = firstMonth
+  if (left > lastLeft) left = lastLeft
+  const picking = state.pick === "to" && state.from ? "to" : "from"
+  const from = state.from || ""
+  const to = picking === "to" ? "" : state.to || ""
+  const day = (d, month) => {
+    // the other months' days fill the grid, in gray: they're picked in their own month
+    if (d.slice(0, 7) !== month) return `<td class="out"><span>${Number(d.slice(8))}</span></td>`
+    const cls = [d === from || d === to ? "end" : from && to && d > from && d < to ? "in" : ""].filter(Boolean)
+    const ok = d >= oldest && d <= today
+    if (!ok) cls.push("off")
+    const next = picking === "to" && d >= from ? { from, to: d, pick: null, cal: null } : { from: d, to: null, pick: "to", cal: left }
+    const n = Number(d.slice(8))
+    return `<td${cls.length ? ` class="${cls.join(" ")}"` : ""}>${ok ? `<a href="${hrefFor(state, next)}">${n}</a>` : `<span>${n}</span>`}</td>`
+  }
+  const month = (ym, prev, next) => {
+    const first = `${ym}-01`
+    const start = addDays(first, -((new Date(`${first}T00:00:00Z`).getUTCDay() + 6) % 7))
+    const weeks = Array.from({ length: 6 }, (_, w) => `<tr>${Array.from({ length: 7 }, (_, i) => day(addDays(start, w * 7 + i), ym)).join("")}</tr>`).join("")
+    const nav = (dir, ok, target) => (ok ? `<a class="nav" href="${hrefFor(state, { cal: target })}" aria-label="${dir === "◀" ? "earlier" : "later"} months">${dir}</a>` : `<span class="nav"></span>`)
+    return `<div class="mon"><div class="head">${prev === null ? `<span class="nav"></span>` : nav("◀", prev, addMonths(left, -1))}<span>${MONTHS[Number(ym.slice(5)) - 1]} ${ym.slice(0, 4)}</span>${next === null ? `<span class="nav"></span>` : nav("▶", next, addMonths(left, 1))}</div><table><tr>${DOW.map((d) => `<th>${d.slice(0, 2)}</th>`).join("")}</tr>${weeks}</table></div>`
+  }
+  const right = addMonths(left, 1)
+  const hint = picking === "to" ? `Pick the last day, from ${escapeHtml(from)}` : "Pick the first day"
+  return `<section class="card"><p class="cap">Custom range · ${hint} · <a href="${hrefFor(state, { pick: null, cal: null, ...(picking === "to" && !state.to ? { from: null } : {}) })}">cancel</a></p><div class="cal">${month(left, left > firstMonth, null)}${month(right, null, right < today.slice(0, 7))}</div></section>`
+}
+
 // credit: an attribution line the backend owes (the self-hosted server's DB-IP data is CC BY 4.0)
 // land: the map's outline (LAND from src/world.js); without it there is no map
 export function render(model, { days, host, filters = {}, generated, config, cache = "cached up to 5 min", credit = "", land = "", today = new Date().toISOString().slice(0, 10) }) {
   const state = { days, host, ...filters }
   // the window's days, and its hour buckets ("YYYY-MM-DD HH", every step hours) for requests
-  const dayWindow = filters.day ? [filters.day] : windowDays(days, today)
+  const dayWindow = filters.day
+    ? [filters.day]
+    : filters.from && filters.to
+      ? Array.from({ length: spanDays(days, filters) }, (_, i) => addDays(filters.from, i))
+      : windowDays(days, today)
   const step = stepHours(days, filters)
   const window = dayWindow.flatMap((d) => Array.from({ length: 24 / step }, (_, i) => `${d} ${String(i * step).padStart(2, "0")}`))
   const c = combine(model, config, host)
-  const dayLinks = [1, 7, 31].map((d) => d === days && !filters.day ? `<b aria-current="true">${d}d</b>` : `<a href="${hrefFor(state, { days: d, day: null })}">${d}d</a>`).join("")
+  // 1d, 7d, 31d drop any custom range; custom opens the calendar (showing the range when there is one)
+  const custom = Boolean(filters.from && filters.to)
+  const clear = { day: null, from: null, to: null, pick: null, cal: null }
+  const rangeLabel = custom ? (filters.from === filters.to ? filters.from.slice(5) : `${filters.from.slice(5)} – ${filters.to.slice(5)}`) : "custom"
+  const dayLinks = [1, 7, 31].map((d) => d === days && !filters.day && !custom && !filters.pick ? `<b aria-current="true">${d}d</b>` : `<a href="${hrefFor(state, { days: d, ...clear })}">${d}d</a>`).join("")
+    + (custom || filters.pick ? `<b aria-current="true"><a href="${hrefFor(state, { pick: "from", cal: null })}">${escapeHtml(rangeLabel)}</a></b>` : `<a href="${hrefFor(state, { pick: "from", cal: null, day: null })}">custom</a>`)
   const sink = filters.view === "sink"
   const viewLinks = sink ? `<a href="${hrefFor(state, { view: null })}">traffic</a><b aria-current="true">sinkhole</b>` : `<b aria-current="true">traffic</b><a href="${hrefFor(state, { view: "sink" })}">sinkhole</a>`
   // every service seen in the window, busiest first; a chip adds its service to the selection or
@@ -1140,15 +1230,13 @@ export function render(model, { days, host, filters = {}, generated, config, cac
   }
   const hostLinks = [host ? `<a href="${hrefFor(state, { host: null })}">all</a>` : `<b aria-current="true">all</b>`, ...[...groups].sort((a, b) => b[1].n - a[1].n).map(([d, g]) => {
     const names = g.names.sort((a, b) => b[1] - a[1])
-    // a domain with one service named the domain needs no group
-    if (names.length === 1 && names[0][0] === d && !selected.includes(`*.${d}`)) return chip(d)
     return `<span class="dom">${chip(`*.${d}`, d)}${names.map(([name]) => chip(name, shortName(name, d))).join("")}</span>`
   })].join("")
   const named = { class: classLabel }
-  const active = FILTER_KEYS.filter((k) => filters[k] && k !== "view").map((k) => `<a href="${hrefFor(state, { [k]: null })}" title="remove this filter">${escapeHtml(k)}: ${escapeHtml(named[k] ? named[k](filters[k]) : filters[k])} ×</a>`).join("")
+  const active = FILTER_KEYS.filter((k) => filters[k] && k !== "view" && !RANGE_KEYS.includes(k)).map((k) => `<a href="${hrefFor(state, { [k]: null })}" title="remove this filter">${escapeHtml(k)}: ${escapeHtml(named[k] ? named[k](filters[k]) : filters[k])} ×</a>`).join("")
   const ai = [...c.classes].filter(([id]) => id.startsWith("ai-")).reduce((t, [, n]) => t + n, 0)
   const share = c.ok2xx ? Math.round((c.bots / c.ok2xx) * 100) : 0
-  const span = filters.day ? escapeHtml(filters.day) : `last ${days} day${days === 1 ? "" : "s"}`
+  const span = filters.day ? escapeHtml(filters.day) : custom ? `${escapeHtml(filters.from)} – ${escapeHtml(filters.to)}` : `last ${days} day${days === 1 ? "" : "s"}`
   const people = [...c.services.values()].filter((s) => s.pageviews).length
   const map = worldMap(c.places, land, state)
   const heat = heatmap(model.heat || [])
@@ -1173,6 +1261,7 @@ ${CSS}
 <div class="top"><h1>${escapeHtml(config.title)}</h1>
 <p class="muted">${c.requests} requests · ${span}${host ? ` · ${escapeHtml(host.split(",").join(", "))}` : ""} · generated ${escapeHtml(generated)}${cache ? ` · ${escapeHtml(cache)}` : ""}</p></div>
 <nav class="bar" aria-label="filters"><div class="seg" aria-label="days">${dayLinks}</div><div class="seg" aria-label="view">${viewLinks}</div><div class="chips" aria-label="services">${hostLinks}</div>${active ? `<div class="chips on" aria-label="active filters">${active}</div>` : ""}</nav>
+${filters.pick ? calendar(state, today) : ""}
 ${model.partial ? `<p class="note">Breakdowns are partial: the detail query hit its ${OK_LIMIT}-group cap, so human counts are a lower bound.</p>` : ""}
 ${sink ? sinkSection(model, state) : ""}
 ${model.length ? `${tiles}
