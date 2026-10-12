@@ -80,7 +80,7 @@ test("classification: bots, assets and self-referrals are not human traffic", ()
   assert.deepEqual([...blog.referers], [["https://news.ycombinator.com", 5]])
   assert.deepEqual([...blog.countries].sort(), [["NO", 6], ["SE", 2]])
   assert.deepEqual([...blog.probes], [["/wp-login.php", 30]])
-  assert.deepEqual([...blog.daily], [["2026-10-02", 30], ["2026-10-03", 22]])
+  assert.deepEqual([...blog.daily], [["2026-10-02 00", 30], ["2026-10-03 00", 22]], "requests by hour bucket")
   assert.equal(proxy.pageviews, 0, "empty and named-scanner UAs are bots")
   assert.equal(proxy.bots, 9)
   assert.deepEqual([...proxy.targets], [["/x.example.org", 4]], "scanner paths are not proxy targets")
@@ -140,21 +140,26 @@ test("non-ASCII passwords authenticate (Basic credentials are UTF-8)", () => {
   assert.ok(!checkAuth(basic("kim", "blabar"), "blåbær"))
 })
 
-test("the daily series has one point per day in the window, zero-filled", () => {
+test("the requests series has one point per hour in the window, zero-filled, and the API keeps days", () => {
   const model = build({
     totals: [{ host: "blog.example.com", status: "200", n: 5 }],
     daily: [
-      { day: "2026-10-01 00:00:00", host: "blog.example.com", n: 3 },
-      { day: "2026-10-03 00:00:00", host: "blog.example.com", n: 2 }
+      { day: "2026-10-01 05:00:00", host: "blog.example.com", n: 3 },
+      { day: "2026-10-03 13:00:00", host: "blog.example.com", n: 2 }
     ]
   }, config)
   const html = render(model, { days: 3, host: null, config, generated: "x", today: "2026-10-03" })
   const card = html.slice(html.indexOf('<section'))
   const chart = card.slice(card.indexOf('<svg class="line"'), card.indexOf("</svg>", card.indexOf('<svg class="line"')))
-  const points = [...chart.matchAll(/<title>([^<]+)<\/title>/g)].map((m) => m[1])
-  assert.deepEqual(points, ["Thu 10-01: 3 requests", "Fri 10-02: 0 requests", "Sat 10-03: 2 requests"])
-  assert.match(chart, /<a href="\?days=3&amp;day=2026-10-01"><g class="pt">/, "a day with requests links into it")
-  assert.doesNotMatch(chart, /day=2026-10-02/, "an empty day doesn't")
+  const points = [...chart.matchAll(/<g class="pt" aria-label="([^"]+)"/g)].map((m) => m[1])
+  assert.equal(points.length, 72, "3 days by the hour")
+  assert.equal(points[5], "Thu 10-01 05:00 UTC: 3 requests")
+  assert.equal(points[6], "Thu 10-01 06:00 UTC: 0 requests")
+  assert.equal(points[61], "Sat 10-03 13:00 UTC: 2 requests")
+  assert.match(chart, /<a href="\?days=3&amp;day=2026-10-01"><g class="pt" aria-label="Thu 10-01 05:00/, "an hour with requests links into its day")
+  assert.doesNotMatch(chart, /<title>/, "no native tooltip next to the hover label")
+  assert.match(chart, />10-01<\/text>[^]*>10-02<\/text>[^]*>10-03<\/text>/, "dates mark the days")
+  assert.deepEqual(toJSON(model, config).hosts[0].daily, [["2026-10-01", 3], ["2026-10-03", 2]], "the API sums days")
 })
 
 test("every configured host has a short description, and the descriptions are escaped", () => {

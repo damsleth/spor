@@ -301,16 +301,18 @@ export function parseFilters(params, now = Date.now()) {
   return out
 }
 
-// The window: whole UTC days ending today, or the one day a day filter names, by the hour
+// The window: whole UTC days ending today, or the one day a day filter names. step is the hours
+// per point of the requests chart: 1 up to a week, 6 beyond (124 points for 31 days)
+export const stepHours = (days, filters = {}) => (filters.day || clampDays(String(days)) <= 7 ? 1 : 6)
 export function span(days, filters = {}, now = Date.now()) {
   const sql = (t) => new Date(t).toISOString().slice(0, 19).replace("T", " ")
   if (filters.day) {
     const from = Date.parse(`${filters.day}T00:00:00Z`)
-    return { from: sql(from), to: sql(from + 86400000), fromSeconds: from / 1000, toSeconds: from / 1000 + 86400, hourly: true }
+    return { from: sql(from), to: sql(from + 86400000), fromSeconds: from / 1000, toSeconds: from / 1000 + 86400, hourly: true, step: 1 }
   }
   const from = Date.parse(windowStart(days, now).replace(" ", "T") + "Z")
   const to = Date.parse(new Date(now).toISOString().slice(0, 10) + "T00:00:00Z") + 86400000
-  return { from: sql(from), to: sql(to), fromSeconds: from / 1000, toSeconds: to / 1000, hourly: clampDays(String(days)) === 1 }
+  return { from: sql(from), to: sql(to), fromSeconds: from / 1000, toSeconds: to / 1000, hourly: clampDays(String(days)) === 1, step: stepHours(days, filters) }
 }
 
 // filters -> SQL conditions over `col`, with `lit` turning a validated value into SQL (a quoted
@@ -346,7 +348,8 @@ export function queries(days, host, config, now = Date.now(), filters = {}) {
   const human = classSql("human", c)
   return {
     totals: `SELECT index1 AS host, blob5 AS status, ${n} ${from} GROUP BY host, status FORMAT JSON`,
-    daily: `SELECT toStartOfInterval(timestamp, INTERVAL '1' ${w.hourly ? "HOUR" : "DAY"}) AS day, index1 AS host, ${n} ${from} GROUP BY day, host ORDER BY day FORMAT JSON`,
+    // requests per hour, or per 6 hours beyond a week (aligned to 00, 06, 12 and 18 UTC)
+    daily: `SELECT toStartOfInterval(timestamp, INTERVAL '${w.step}' HOUR) AS day, index1 AS host, ${n} ${from} GROUP BY day, host ORDER BY day FORMAT JSON`,
     ok: `SELECT index1 AS host, blob1 AS path, blob2 AS referer, blob3 AS ua, blob4 AS country, blob6 AS bot, blob8 AS method, blob12 AS asorg, ${n} ${from} AND ${ok} AND blob3 != '' GROUP BY host, path, referer, ua, country, bot, method, asorg ORDER BY n DESC, host, path, referer, ua, country, bot, method, asorg LIMIT ${OK_LIMIT} FORMAT JSON`,
     paths: `SELECT index1 AS host, blob1 AS path, blob5 AS status, ${n} ${from} GROUP BY host, path, status ORDER BY n DESC, host, path, status LIMIT 500 FORMAT JSON`,
     origins: `SELECT index1 AS host, blob7 AS origin, ${n} ${from} AND blob7 != '' GROUP BY host, origin ORDER BY n DESC, host, origin LIMIT 50 FORMAT JSON`,
@@ -439,8 +442,8 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
     if (String(r.status) >= "200" && String(r.status) < "300") h.ok2xx += num(r.n)
     add(h.status, String(r.status), num(r.n))
   }
-  // a day key, or "YYYY-MM-DD HH" when the window is a single day
-  for (const r of daily) add(get(r.host).daily, String(r.day).slice(0, hourly ? 13 : 10), num(r.n))
+  // requests by "YYYY-MM-DD HH": the start of each hour (or 6-hour) bucket
+  for (const r of daily) add(get(r.host).daily, String(r.day).slice(0, 13), num(r.n))
   for (const r of ok) {
     const h = get(r.host)
     const n = num(r.n)
@@ -540,6 +543,13 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
   return model
 }
 
+// "YYYY-MM-DD HH" -> n summed into "YYYY-MM-DD" -> n, sorted
+const perDay = (series) => {
+  const days = new Map()
+  for (const [k, n] of series) days.set(k.slice(0, 10), (days.get(k.slice(0, 10)) || 0) + n)
+  return [...days.entries()].sort()
+}
+
 // The model as plain JSON (Maps become [key, count] lists, top first), for /api/report and the CLI
 export function toJSON(model, config, { days, host, filters = {} } = {}) {
   const top = (map) => [...map.entries()].sort((a, b) => b[1] - a[1])
@@ -549,7 +559,7 @@ export function toJSON(model, config, { days, host, filters = {} } = {}) {
     hosts: model.map((h) => ({
       host: h.host, service: serviceOf(h.host, config), description: config.services[h.host] || config.services[serviceOf(h.host, config)] || null,
       requests: h.requests, ok2xx: h.ok2xx, pageviews: h.pageviews, bots: h.bots, visitors: h.visitors, visitorsDaily: [...h.visitorsDaily.entries()].sort(),
-      status: top(h.status), daily: [...h.daily.entries()].sort(), pages: top(h.pages), referers: top(h.referers),
+      status: top(h.status), daily: perDay(h.daily), hours: [...h.daily.entries()].sort(), pages: top(h.pages), referers: top(h.referers),
       countries: top(h.countries), browsers: top(h.browsers), probes: top(h.probes), targets: top(h.targets), origins: top(h.origins),
       cities: top(h.cities), networks: top(h.networks).map(([asn, n]) => [asn, h.names.get(`as:${asn}`) || "", n]),
       classes: top(h.classes), agents: top(h.agents).map(([k, n]) => [k.slice(0, k.indexOf("\t")), k.slice(k.indexOf("\t") + 1), n]),
@@ -628,7 +638,9 @@ function niceMax(v) {
 const short = (n) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${+(n / 1e3).toFixed(1)}k` : String(+n.toFixed(1)))
 const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 // "2026-10-06" -> "Tue 10-06", "2026-10-06 14" -> "10-06 14:00"
-const keyLabel = (k) => (k.length > 10 ? `${k.slice(5, 10)} ${k.slice(11)}:00` : `${DOW[(new Date(`${k}T00:00:00Z`).getUTCDay() + 6) % 7]} ${k.slice(5)}`)
+const weekday = (day) => DOW[(new Date(`${day.slice(0, 10)}T00:00:00Z`).getUTCDay() + 6) % 7]
+// "2026-10-06" -> "Tue 10-06", "2026-10-06 14" -> "Tue 10-06 14:00 UTC"
+const keyLabel = (k) => (k.length > 10 ? `${weekday(k)} ${k.slice(5, 10)} ${k.slice(11)}:00 UTC` : `${weekday(k)} ${k.slice(5)}`)
 
 // A line chart over the window's keys (days, or a day's hours), zero-filled, like Cloudflare's:
 // gridlines with values, a few x labels, a filled line, and per point a hover column with a guide,
@@ -651,10 +663,12 @@ function lineChart(series, window, noun, dayLink = null) {
     const v = (max * t) / 4
     return `<line class="g" x1="${L}" x2="${CW - R}" y1="${fx(y(v))}" y2="${fx(y(v))}"/><text class="ax" x="${L - 6}" y="${fx(y(v) + 4)}" text-anchor="end">${short(v)}</text>`
   }).join("")
-  const every = Math.max(1, Math.ceil(window.length / 7))
-  const xlabels = window.map((k, i) => (i % every === 0 || i === window.length - 1) && (i === window.length - 1 || window.length - 1 - i >= every / 2)
-    ? `<text class="ax" x="${fx(x(i))}" y="${CH - 6}" text-anchor="middle">${escapeHtml(k.length > 10 ? `${k.slice(11)}:00` : k.slice(5))}</text>`
-    : "").join("")
+  // x labels: dates at midnight when the keys span several days, else every few hours or days
+  const days = new Set(window.map((k) => k.slice(0, 10))).size
+  const marks = window.length > 1 && window[0].length > 10 && days > 1
+    ? window.map((k, i) => [k, i]).filter(([k]) => k.endsWith(" 00")).filter((_, j, a) => j % Math.ceil(a.length / 7) === 0)
+    : window.map((k, i) => [k, i]).filter(([, i]) => i % Math.max(1, Math.ceil(window.length / 7)) === 0)
+  const xlabels = marks.map(([k, i]) => `<text class="ax" x="${fx(x(i))}" y="${CH - 6}" text-anchor="middle">${escapeHtml(k.length > 10 && days === 1 ? `${k.slice(11)}:00` : k.slice(5, 10))}</text>`).join("")
   const pts = vals.map((v, i) => `${fx(x(i))},${fx(y(v))}`)
   const line = `M${pts.join("L")}`
   const area = `${line}L${fx(x(vals.length - 1))},${fx(y(0))}L${fx(x(0))},${fx(y(0))}Z`
@@ -664,14 +678,16 @@ function lineChart(series, window, noun, dayLink = null) {
   const right = (i) => (i === window.length - 1 ? CW - R : (x(i) + x(i + 1)) / 2)
   const hover = window.map((k, i) => {
     const text = `${keyLabel(k)}: ${fmt(vals[i])} ${noun}`
-    const g = `<g class="pt"><rect class="hit" x="${fx(left(i))}" y="${T}" width="${fx(right(i) - left(i))}" height="${CH - T - B}"/><line class="guide" x1="${fx(x(i))}" x2="${fx(x(i))}" y1="${T}" y2="${CH - B}"/><circle cx="${fx(x(i))}" cy="${fx(y(vals[i]))}" r="3.5"/>${tipBox(x(i), y(vals[i]), text, CW, CH)}<title>${escapeHtml(text)}</title></g>`
-    return dayLink && k.length === 10 && vals[i] ? `<a href="${dayLink(k)}">${g}</a>` : g
+    // the hover label is the text; aria-label says it to a screen reader (a <title> would also pop
+    // up the browser's own tooltip)
+    const g = `<g class="pt" aria-label="${escapeHtml(text)}"><rect class="hit" x="${fx(left(i))}" y="${T}" width="${fx(right(i) - left(i))}" height="${CH - T - B}"/><line class="guide" x1="${fx(x(i))}" x2="${fx(x(i))}" y1="${T}" y2="${CH - B}"/><circle cx="${fx(x(i))}" cy="${fx(y(vals[i]))}" r="${window.length > 60 ? 2.5 : 3.5}"/>${tipBox(x(i), y(vals[i]), text, CW, CH)}</g>`
+    return dayLink && vals[i] ? `<a href="${dayLink(k.slice(0, 10))}">${g}</a>` : g
   }).join("")
   return `<svg class="line" viewBox="0 0 ${CW} ${CH}" role="img" aria-label="${escapeHtml(noun)}, ${escapeHtml(window[0])} to ${escapeHtml(window[window.length - 1])}, peak ${fmt(Math.max(...vals))}">${grid}${xlabels}<path class="area" d="${area}"/><path class="stroke" d="${line}"/>${hover}</svg>`
 }
 
 // A labelled chart row: the name and total on the left, the chart on the right
-const chartRow = (name, total, svg) => (svg ? `<div class="chart"><div><p class="cap">${escapeHtml(name)}</p><p class="big">${fmt(total)}</p></div>${svg}</div>` : "")
+const chartRow = (name, total, svg, unit = "") => (svg ? `<div class="chart"><div><p class="cap">${escapeHtml(name)}</p><p class="big">${fmt(total)}</p>${unit ? `<p class="muted unit">${escapeHtml(unit)}</p>` : ""}</div>${svg}</div>` : "")
 
 // The one script the page runs: wheel (and trackpad pinch) zooms the map around the cursor, a drag
 // pans it, circles and labels keep their size on screen, and a drag never counts as a click. It
@@ -777,7 +793,7 @@ function worldMap(places, land, state) {
     // a click selects the city; on the selected city it drops the selection
     const valid = parseFilters(new URLSearchParams({ country: p.country, city: p.city }))
     const next = picked(p) && state.city ? { country: null, city: null } : { country: valid.country || null, city: valid.country ? valid.city || null : null }
-    const g = `<g class="pt"><circle class="hit" cx="${f(mapX(p))}" cy="${f(mapY(p))}" r="${f(Math.max(r(p), 3 * k))}"/>${tipBox(mapX(p), mapY(p), text, vb[2], vb[3], 9 * k, vb[0], vb[1])}<title>${escapeHtml(text)}</title></g>`
+    const g = `<g class="pt" aria-label="${escapeHtml(text)}"><circle class="hit" cx="${f(mapX(p))}" cy="${f(mapY(p))}" r="${f(Math.max(r(p), 3 * k))}"/>${tipBox(mapX(p), mapY(p), text, vb[2], vb[3], 9 * k, vb[0], vb[1])}</g>`
     return next.country || picked(p) ? `<a href="${hrefFor(state, next)}">${g}</a>` : g
   }).join("")
   const sea = sel.length ? `<a href="${hrefFor(state, { country: null, city: null })}" aria-label="show the whole world"><rect class="sea" x="${f(vb[0])}" y="${f(vb[1])}" width="${f(vb[2])}" height="${f(vb[3])}"/></a>` : ""
@@ -793,13 +809,20 @@ function heatmap(heat) {
   const cells = heat.map((row, d) => row.map((v, h) => `<rect x="${24 + h * 10}" y="${d * 10}" width="9" height="9" style="opacity:${v ? (0.15 + 0.85 * v / max).toFixed(2) : 0.06}"/>`).join("")).join("")
   const hits = heat.map((row, d) => row.map((v, h) => {
     const text = `${DOW[d]} ${String(h).padStart(2, "0")}:00 UTC: ${fmt(v)} requests`
-    return `<g class="pt"><rect class="hit" x="${24 + h * 10}" y="${d * 10}" width="10" height="10"/><rect class="ring" x="${24 + h * 10}" y="${d * 10}" width="9" height="9"/>${tipBox(24 + h * 10 + 4, d * 10, text, 264, 82, 6)}<title>${escapeHtml(text)}</title></g>`
+    return `<g class="pt" aria-label="${escapeHtml(text)}"><rect class="hit" x="${24 + h * 10}" y="${d * 10}" width="10" height="10"/><rect class="ring" x="${24 + h * 10}" y="${d * 10}" width="9" height="9"/>${tipBox(24 + h * 10 + 4, d * 10, text, 264, 82, 6)}</g>`
   }).join("")).join("")
   const labels = DOW.map((d, i) => `<text x="0" y="${i * 10 + 8}">${d}</text>`).join("")
   const hours = [0, 6, 12, 18, 23].map((h) => `<text x="${24 + h * 10}" y="80">${String(h).padStart(2, "0")}</text>`).join("")
   return `<svg class="heat" viewBox="0 0 264 82" role="img" aria-label="requests by weekday and hour, UTC, busiest ${max}">${labels}${cells}${hours}${hits}</svg>`
 }
 
+const STATUS_COLORS = {
+  c2: ["#2e9e63", "#8fd19e", "#1f6b45"],
+  c3: ["#3b6fe0", "#9a6be0", "#4fb3e8", "#7f8fd8"],
+  c4: ["#e0821a", "#f2c230", "#b7462a", "#f3a08e", "#8c5a2b", "#d6a26b"],
+  c5: ["#d23b3b", "#e5579e", "#8f1d2c"],
+  co: ["#8a919d", "#b9bec8", "#5f6670"]
+}
 // Status codes as a donut: a slice per code (the top 8, the rest as "other"), colored by class
 // (2xx green, 3xx blue, 4xx orange, 5xx red), lighter for the less common codes of a class. The
 // center shows the total, or the hovered slice's code, count and share; a legend lists them all.
@@ -811,11 +834,14 @@ function statusPie(status) {
   const rest = sorted.slice(8).reduce((t, [, v]) => t + v, 0)
   if (rest) slices.push(["other", rest])
   const cls = (k) => (/^[2-5]\d\d$/.test(k) ? `c${k[0]}` : "co")
+  // each code its own color, distinct within its class: the class's hue first, then clearly
+  // different ones (4xx: orange, yellow, rust, salmon, brown), readable on light and dark
   const seen = new Map()
-  const shade = (k) => {
+  const color = (k) => {
+    const list = STATUS_COLORS[cls(k)]
     const n = seen.get(cls(k)) || 0
     seen.set(cls(k), n + 1)
-    return [1, 0.72, 0.5, 0.34][Math.min(n, 3)]
+    return list[n % list.length]
   }
   const C = 70
   const RO = 62
@@ -831,9 +857,10 @@ function statusPie(status) {
       : `M${pt(RO, a0)}A${RO},${RO} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${pt(RO, a1)}L${pt(RI, a1)}A${RI},${RI} 0 ${a1 - a0 > Math.PI ? 1 : 0} 0 ${pt(RI, a0)}Z`
     a0 = a1
     const text = `${k}: ${fmt(v)} (${pct(v)})`
-    return { k, v, svg: `<g class="pt"><path class="${cls(k)}" d="${d}" fill-rule="evenodd" style="opacity:${shade(k)}"/><text class="ctr" x="${C}" y="${C - 2}" text-anchor="middle">${escapeHtml(k)}</text><text class="ctr sub" x="${C}" y="${C + 14}" text-anchor="middle">${fmt(v)} · ${pct(v)}</text><title>${escapeHtml(text)}</title></g>` }
+    const fill = color(k)
+    return { k, v, fill, svg: `<g class="pt" aria-label="${escapeHtml(text)}"><path d="${d}" fill-rule="evenodd" style="fill:${fill}"/><text class="ctr" x="${C}" y="${C - 2}" text-anchor="middle">${escapeHtml(k)}</text><text class="ctr sub" x="${C}" y="${C + 14}" text-anchor="middle">${fmt(v)} · ${pct(v)}</text></g>` }
   })
-  const legend = parts.map(({ k, v }) => `<li><i class="${cls(k)}"></i><b>${escapeHtml(k)}</b> ${fmt(v)} <span class="muted">${pct(v)}</span></li>`).join("")
+  const legend = parts.map(({ k, v, fill }) => `<li><i style="background:${fill}"></i><b>${escapeHtml(k)}</b> ${fmt(v)} <span class="muted">${pct(v)}</span></li>`).join("")
   return `<div class="statusbox"><svg class="pie" viewBox="0 0 140 140" role="img" aria-label="status codes: ${escapeHtml(parts.map(({ k, v }) => `${k} ${pct(v)}`).join(", "))}"><text class="total" x="${C}" y="${C - 2}" text-anchor="middle">${short(total)}</text><text class="total sub" x="${C}" y="${C + 14}" text-anchor="middle">requests</text>${parts.map((p) => p.svg).join("")}</svg><ul class="pielegend">${legend}</ul></div>`
 }
 
@@ -884,7 +911,7 @@ function combine(model, config, host = null) {
 }
 
 // One card for everything in view: the selected services, or all of them
-function combinedSection(c, window, config, capped, state) {
+function combinedSection(c, window, dayWindow, config, capped, state) {
   const share = c.ok2xx ? Math.round((c.bots / c.ok2xx) * 100) : 0
   const by = (key) => ({ link: (k) => filterLink(state, key, k) })
   const tab = (k) => k.indexOf("\t")
@@ -902,8 +929,8 @@ function combinedSection(c, window, config, capped, state) {
   return `<section class="card">
 ${only ? `<header><h2>${escapeHtml(unitLabel(only))}${desc ? ` <span class="desc">${escapeHtml(desc)}</span>` : ""}</h2></header>` : ""}
 <p class="summary"><b>${fmt(c.requests)}</b> requests · <b>${fmt(c.pageviews)}</b> human page views${c.visitors ? ` · <b>${fmt(c.visitors)}</b> unique visitors` : ""} · ${shareText(share, capped)} of 2xx from bots${capped ? " (upper bound)" : ""}</p>
-${chartRow("Requests", c.requests, lineChart(c.daily, window, "requests", (day) => hrefFor(state, { day })))}
-${window[0].length > 10 ? "" : chartRow("Unique visitors", c.visitors, lineChart(c.visitorsDaily, window, "visitors", (day) => hrefFor(state, { day })))}
+${chartRow("Requests", c.requests, lineChart(c.daily, window, "requests", state.day ? null : (day) => hrefFor(state, { day })), window.length === dayWindow.length * 24 ? "per hour" : `per ${(dayWindow.length * 24) / window.length} hours`)}
+${dayWindow.length > 1 ? chartRow("Unique visitors", c.visitors, lineChart(c.visitorsDaily, dayWindow, "visitors", (day) => hrefFor(state, { day })), "per day") : ""}
 ${statusPie(c.status)}
 <div class="grid">
 ${c.multi ? table("services", services, { label: (k) => config.services[k] ? `${k} · ${config.services[k]}` : unitLabel(k), link: (k) => hrefFor(state, { host: k }) }) : ""}${named ? table("host names", c.hostnames, { link: (k) => hrefFor(state, { host: exact(k) }) }) : ""}${table("pages", c.pages, scoped)}${table("referers", c.referers)}${table("countries", c.countries, { link: (k) => filterLink({ ...state, city: null }, "country", k) })}${table("cities", c.cities)}${table("browsers", c.browsers)}${table("networks", c.networks, { label: (asn) => `AS${asn} ${c.names.get(`as:${asn}`) || ""}`.trim(), ...by("asn") })}${table("bots and AI", c.classes, { label: classLabel, ...by("class") })}${table("agents", c.agents, { label: (k) => k.slice(tab(k) + 1), link: (k) => filterLink(state, "class", k.slice(0, tab(k))) })}${table("IP addresses", c.ips, { label: (ip) => `${ip} ${c.names.get(`ip:${ip}`) || ""}`.trim(), ...by("ip") })}${table("404s and probes", c.probes, scoped)}${table("proxy targets", c.targets)}${table("proxy callers (Origin)", c.origins)}
@@ -964,7 +991,7 @@ td.n{width:56px;text-align:right;font-variant-numeric:tabular-nums;padding-left:
 .spark a rect{cursor:pointer}
 .foot{font-size:12px;margin-top:24px}
 .chart{display:grid;grid-template-columns:140px 1fr;gap:12px;align-items:center;border-top:1px solid var(--line);padding:10px 0}.chart:first-of-type{border-top:0}
-.chart .big{font-size:24px;font-weight:650;margin:0;font-variant-numeric:tabular-nums}.chart .cap{margin:0}
+.chart .big{font-size:24px;font-weight:650;margin:0;font-variant-numeric:tabular-nums}.chart .cap{margin:0}.chart .unit{margin:0;font-size:12px}
 .line{display:block;width:100%;height:auto;overflow:visible}.line .g{stroke:var(--line);stroke-dasharray:3 3}.line .ax{fill:var(--muted);font-size:11px}
 .line .area{fill:var(--accent-soft)}.line .stroke{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round}
 .pt .hit{fill:transparent}.pt .guide,.line .pt circle,.pt .ring,.tip{visibility:hidden;pointer-events:none}
@@ -1011,10 +1038,10 @@ ${uses.length ? `<table class="alerts"><caption>canary alerts</caption><tr><th>h
 // land: the map's outline (LAND from src/world.js); without it there is no map
 export function render(model, { days, host, filters = {}, generated, config, cache = "cached up to 5 min", credit = "", land = "", today = new Date().toISOString().slice(0, 10) }) {
   const state = { days, host, ...filters }
-  // one day, by the hour, when the window is a day; whole days otherwise
-  const window = filters.day || days === 1
-    ? Array.from({ length: 24 }, (_, h) => `${filters.day || today} ${String(h).padStart(2, "0")}`)
-    : windowDays(days, today)
+  // the window's days, and its hour buckets ("YYYY-MM-DD HH", every step hours) for requests
+  const dayWindow = filters.day ? [filters.day] : windowDays(days, today)
+  const step = stepHours(days, filters)
+  const window = dayWindow.flatMap((d) => Array.from({ length: 24 / step }, (_, i) => `${d} ${String(i * step).padStart(2, "0")}`))
   const c = combine(model, config, host)
   const dayLinks = [1, 7, 31].map((d) => d === days && !filters.day ? `<b aria-current="true">${d}d</b>` : `<a href="${hrefFor(state, { days: d, day: null })}">${d}d</a>`).join("")
   const sink = filters.view === "sink"
@@ -1074,7 +1101,7 @@ ${sink ? sinkSection(model, state) : ""}
 ${model.length ? `${tiles}
 ${mapCard}
 ${heat ? `<div class="card"><p class="cap">Requests by weekday and hour (UTC)</p>${heat}</div>` : ""}
-${combinedSection(c, window, config, model.partial, state)}` : `<p class="empty muted">No data in this window.</p>`}
+${combinedSection(c, window, dayWindow, config, model.partial, state)}` : `<p class="empty muted">No data in this window.</p>`}
 ${credit ? `<p class="muted foot">${credit}</p>` : ""}
 ${map ? `<script>${MAP_SCRIPT}</script>` : ""}
 </body></html>`

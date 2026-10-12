@@ -134,11 +134,11 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
       const ok = "status >= '200' AND status < '300'"
       const people = f.class || f.view === "sink" ? "" : ` AND ${classSql("human", COLS)}`
       const human = classSql("human", COLS)
-      const bucket = w.hourly ? "'%Y-%m-%d %H:00:00'" : "'%Y-%m-%d'"
+      const bucket = w.step * 3600
       const all = (sql) => db.prepare(sql).all(...values)
       return {
         totals: all(`SELECT host, status, ${n} ${where} GROUP BY host, status`),
-        daily: all(`SELECT strftime(${bucket}, hour, 'unixepoch') AS day, host, ${n} ${where} GROUP BY day, host ORDER BY day`),
+        daily: all(`SELECT strftime('%Y-%m-%d %H:00:00', (hour / ${bucket}) * ${bucket}, 'unixepoch') AS day, host, ${n} ${where} GROUP BY day, host ORDER BY day`),
         ok: all(`SELECT host, path, referer, ua, country, bot, method, asorg, ${n} ${where} AND ${ok} AND ua != '' GROUP BY host, path, referer, ua, country, bot, method, asorg ORDER BY n DESC, host, path, referer, ua, country, bot, method, asorg LIMIT ${OK_LIMIT}`),
         paths: all(`SELECT host, path, status, ${n} ${where} GROUP BY host, path, status ORDER BY n DESC, host, path, status LIMIT 500`),
         origins: all(`SELECT host, origin, ${n} ${where} AND origin != '' GROUP BY host, origin ORDER BY n DESC, host, origin LIMIT 50`),

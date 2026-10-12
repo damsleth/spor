@@ -67,7 +67,8 @@ test("rows() answers the AE result sets with the same filters, and build() count
   ])
   const r = s.rows(7, null, config, NOW)
   assert.deepEqual(Object.keys(r), Object.keys(queries(7, null, config, NOW)))
-  assert.ok(r.daily.every((x) => /^\d{4}-\d{2}-\d{2}$/.test(x.day)))
+  assert.ok(r.daily.every((x) => /^\d{4}-\d{2}-\d{2} \d{2}:00:00$/.test(x.day)), "hour buckets, like AE's")
+  assert.ok(s.rows(31, null, config, NOW).daily.every((x) => /^\d{4}-\d{2}-\d{2} (00|06|12|18):00:00$/.test(x.day)), "6-hour buckets beyond a week")
   assert.ok(r.ok.every((x) => x.ua !== ""), "empty user agents never reach the detail rows, as in AE")
   assert.deepEqual(plain(r.origins), [{ host: "proxy.example.net", origin: "https://caller.example", n: 3 }])
 
