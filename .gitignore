@@ -6,3 +6,5 @@ node_modules/
 wrangler.jsonc
 tap/wrangler.jsonc
 .claude/
+.plans/
+.tmp/
