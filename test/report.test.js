@@ -93,7 +93,7 @@ test("render escapes every attacker-written value", () => {
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/)
   assert.match(html, /&lt;now&gt;/)
   assert.match(html, /blog\.example\.com · personal tech blog/, "the services table names each service")
-  assert.match(html, /title="CORS proxy with allowlist and secret substitution">proxy\.example\.net<\/a>/)
+  assert.match(html, /title="CORS proxy with allowlist and secret substitution">proxy<\/a>/, "a chip under its domain, named short")
   assert.equal(escapeHtml(`"'<>&`), "&quot;&#39;&lt;&gt;&amp;")
   assert.match(render([], { days: 1, host: null, config, generated: "x" }), /No data in this window/)
 })

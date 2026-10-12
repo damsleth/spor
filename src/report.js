@@ -195,12 +195,28 @@ export function clampDays(value) {
 export function validHost(value, config) {
   if (typeof value !== "string") return null
   const items = value.split(",").map((item) => {
-    const exact = item.endsWith("!")
-    const name = normalizeHost(exact ? item.slice(0, -1) : item)
-    return name.length <= 253 && HOSTNAME.test(name) ? `${name}${exact ? "!" : ""}` : null
+    // "*.example.com": a whole domain, every name under it and itself
+    const domain = item.startsWith("*.")
+    const exact = !domain && item.endsWith("!")
+    const name = normalizeHost(domain ? item.slice(2) : exact ? item.slice(0, -1) : item)
+    if (!(name.length <= 253 && HOSTNAME.test(name))) return null
+    return domain ? `*.${name}` : `${name}${exact ? "!" : ""}`
   })
   const names = [...new Set(items.filter(Boolean))].slice(0, MAX_HOSTS)
   return names.length ? names.join(",") : null
+}
+
+// A host's domain, the one it is grouped under: its last two labels (blog.example.com ->
+// example.com). ponytail: a two-label public suffix (example.co.uk) groups as co.uk; a public
+// suffix list would fix that
+export const domainOf = (host) => normalizeHost(host).split(".").slice(-2).join(".")
+
+// Does a selected item cover a host: a domain ("*.d") every name under it and itself, else the
+// names coveredHosts lists
+export function covers(item, host, config) {
+  const h = normalizeHost(host)
+  if (item.startsWith("*.")) return h === item.slice(2) || h.endsWith(`.${item.slice(2)}`)
+  return coveredHosts(item, config).includes(h)
 }
 
 // The host names one selected item covers: a service brings its aliases, "name!" only itself;
@@ -213,13 +229,21 @@ export function coveredHosts(item, config) {
 }
 
 export function selectedHosts(host, config) {
-  return host ? [...new Set(host.split(",").flatMap((item) => coveredHosts(item, config)))] : []
+  return host ? [...new Set(host.split(",").filter((item) => !item.startsWith("*.")).flatMap((item) => coveredHosts(item, config)))] : []
 }
 
-// the host condition for queries(): AE gets quoted literals, SQLite placeholders through lit
+// the host condition for queries(): AE gets quoted literals, SQLite placeholders through lit. A
+// domain is itself or anything ending in ".domain" (a validated host name has no quote, % or _)
 export function hostSql(host, config, col, lit) {
+  if (!host) return ""
+  const parts = []
   const names = selectedHosts(host, config)
-  return names.length ? ` AND ${col} IN (${names.map(lit).join(", ")})` : ""
+  if (names.length) parts.push(`${col} IN (${names.map(lit).join(", ")})`)
+  for (const item of host.split(",").filter((i) => i.startsWith("*."))) {
+    const d = item.slice(2)
+    parts.push(`${col} = ${lit(d)}`, `${col} = ${lit(`${d}.`)}`, `${col} LIKE ${lit(`%.${d}`)}`, `${col} LIKE ${lit(`%.${d}.`)}`)
+  }
+  return parts.length ? ` AND (${parts.join(" OR ")})` : ""
 }
 
 // The window is whole UTC calendar days ending today, the same days the charts show
@@ -908,7 +932,8 @@ function combine(model, config, host = null) {
   const add = (map, k, n) => map.set(k, (map.get(k) || 0) + n)
   const merge = (to, from, key = (k) => k) => { for (const [k, n] of from) add(to, key(k), n) }
   // host -> its unit, worked out once per host: the first selected item covering it, else its service
-  const items = (host ? host.split(",") : []).map((item) => [item, new Set(coveredHosts(item, config))])
+  // a domain selection still breaks down by service: only names and services are units
+  const items = (host ? host.split(",") : []).filter((item) => !item.startsWith("*.")).map((item) => [item, new Set(coveredHosts(item, config))])
   const units = new Map()
   const unitOf = (h) => {
     if (!units.has(h)) units.set(h, items.find(([, covered]) => covered.has(h))?.[0] || serviceOf(h, config))
@@ -1014,6 +1039,8 @@ td.n{width:56px;text-align:right;font-variant-numeric:tabular-nums;padding-left:
 .cell span{position:relative;display:block;overflow-wrap:anywhere}
 .empty{text-align:center;padding:48px 0}
 .chips.on a{border-color:var(--accent);color:var(--fg)}
+.chips .dom{display:inline-flex;flex-wrap:wrap;gap:4px;align-items:center;padding:2px 4px 2px 2px;border:1px solid var(--line);border-radius:999px;background:var(--soft)}
+.chips .dom>a:first-child,.chips .dom>span:first-child{font-weight:600;color:var(--fg)}
 .chips span.off{padding:2px 10px;border:1px dashed var(--line);border-radius:999px;font-size:13px;color:var(--muted)}
 .heat{display:block;width:100%;max-width:528px;margin-top:12px;fill:var(--accent);font-size:7px}.heat text{fill:var(--muted)}
 .cell a{color:inherit}.cell a:hover{color:var(--accent)}
@@ -1082,20 +1109,41 @@ export function render(model, { days, host, filters = {}, generated, config, cac
   for (const [h, n] of model.hosts || []) seen.set(serviceOf(h, config), (seen.get(serviceOf(h, config)) || 0) + n)
   // a result set without the hosts query (an older backend) still lists what it has
   for (const h of model) if (!seen.has(serviceOf(h.host, config))) seen.set(serviceOf(h.host, config), h.requests)
-  for (const name of selected) if (!seen.has(name)) seen.set(name, 0)
+  // a selected name with no traffic still gets its chip; a selected domain gets its group below
+  for (const name of selected) if (!name.startsWith("*.") && !seen.has(name)) seen.set(name, 0)
   const toggle = (name) => {
     const next = selected.includes(name) ? selected.filter((x) => x !== name) : [...selected, name]
     return hrefFor(state, { host: next.join(",") || null })
   }
-  const chip = (name) => {
-    const label = name.endsWith("!") ? `${name.slice(0, -1)} only` : name
+  const chip = (name, label = name.endsWith("!") ? `${name.slice(0, -1)} only` : name) => {
     const title = config.services[name] ? ` title="${escapeHtml(config.services[name])}"` : ""
     if (selected.includes(name)) return `<a class="sel" href="${toggle(name)}"${title} aria-current="true">${escapeHtml(label)} ×</a>`
     // a full selection takes no more: the 21st name would be dropped
     if (selected.length >= MAX_HOSTS) return `<span class="off" title="at most ${MAX_HOSTS} at a time">${escapeHtml(label)}</span>`
     return `<a href="${toggle(name)}"${title}>${escapeHtml(label)}</a>`
   }
-  const hostLinks = [host ? `<a href="${hrefFor(state, { host: null })}">all</a>` : `<b aria-current="true">all</b>`, ...[...seen].sort((a, b) => b[1] - a[1]).map(([name]) => chip(name))].join("")
+  // services grouped under their domain, the busiest domain first: the domain's chip selects all of
+  // it, then a chip per service, named short ("blog" for blog.example.com, "@" for the domain itself)
+  const groups = new Map()
+  for (const [name, n] of seen) {
+    const d = domainOf(name.replace(/!$/, ""))
+    const g = groups.get(d) || { n: 0, names: [] }
+    g.n += n
+    g.names.push([name, n])
+    groups.set(d, g)
+  }
+  for (const item of selected) if (item.startsWith("*.") && !groups.has(item.slice(2))) groups.set(item.slice(2), { n: 0, names: [] })
+  const shortName = (name, d) => {
+    const bare = name.replace(/!$/, "")
+    const label = bare === d ? "@" : bare.endsWith(`.${d}`) ? bare.slice(0, -d.length - 1) : bare
+    return name.endsWith("!") ? `${label} only` : label
+  }
+  const hostLinks = [host ? `<a href="${hrefFor(state, { host: null })}">all</a>` : `<b aria-current="true">all</b>`, ...[...groups].sort((a, b) => b[1].n - a[1].n).map(([d, g]) => {
+    const names = g.names.sort((a, b) => b[1] - a[1])
+    // a domain with one service named the domain needs no group
+    if (names.length === 1 && names[0][0] === d && !selected.includes(`*.${d}`)) return chip(d)
+    return `<span class="dom">${chip(`*.${d}`, d)}${names.map(([name]) => chip(name, shortName(name, d))).join("")}</span>`
+  })].join("")
   const named = { class: classLabel }
   const active = FILTER_KEYS.filter((k) => filters[k] && k !== "view").map((k) => `<a href="${hrefFor(state, { [k]: null })}" title="remove this filter">${escapeHtml(k)}: ${escapeHtml(named[k] ? named[k](filters[k]) : filters[k])} ×</a>`).join("")
   const ai = [...c.classes].filter(([id]) => id.startsWith("ai-")).reduce((t, [, n]) => t + n, 0)
