@@ -149,7 +149,7 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
         ...(f.view === "sink"
           ? {
             sinkkinds: all(`SELECT sink AS kind, host, ${n} ${where} GROUP BY kind, host ORDER BY n DESC, kind, host LIMIT 200`),
-            sinkuse: all(`SELECT strftime('%Y-%m-%d %H:00:00', hour, 'unixepoch') AS at, host, path, sink AS kind, sinkctx AS ctx, ip, asorg, country, ${n} ${where} AND sink LIKE 'use:%' GROUP BY at, host, path, kind, ctx, ip, asorg, country ORDER BY at DESC, host, path, kind, ctx, ip, asorg, country LIMIT ${LIMITS.canaries}`)
+            sinkuse: all(`SELECT strftime('%Y-%m-%d %H:00:00', hour, 'unixepoch') AS at, host, path, sink AS kind, sinkctx AS ctx, ip, asorg, country, ua, method, ${n} ${where} AND sink LIKE 'use:%' GROUP BY at, host, path, kind, ctx, ip, asorg, country, ua, method ORDER BY at DESC, host, path, kind, ctx, ip, asorg, country, ua, method LIMIT ${LIMITS.canaries}`)
           }
           : {}),
         // traffic only: bait kept apart (source "sink") is no request of its own

@@ -143,11 +143,14 @@ test("the sinkhole view filters every query, lists canary uses, and escapes what
   const model = build({
     totals: [{ host: "blog.example.com", status: "200", n: 3 }],
     sinkkinds: [{ kind: "bait:env", host: "blog.example.com", n: 2 }, { kind: "use:env", host: "blog.example.com", n: 1 }],
-    sinkuse: [{ at: "2030-01-02 03:00:00", host: "blog.example.com", path: `/x${evil}`, kind: "use:env", ctx: `${evil}|198.51.100.9|2030-01-02 03:04|env`, ip: "192.0.2.50", asorg: evil, country: "NL", n: 1 }]
+    sinkuse: [{ at: "2030-01-02 03:00:00", host: "blog.example.com", path: `/x${evil}`, kind: "use:env", ctx: `${evil}|198.51.100.9|2030-01-02 03:04|env`, ip: "192.0.2.50", asorg: evil, country: "NL", ua: `curl/8 ${evil}`, method: "POST", n: 3 }]
   }, config)
   const html = render(model, { days: 7, host: null, filters: f, config, generated: "x" })
   assert.doesNotMatch(html, /<img/)
   assert.match(html, /canary alerts/)
+  assert.match(html, /<b class="method">POST<\/b>/)
+  assert.match(html, /curl\/8 &lt;img/)
+  assert.match(html, /×3/)
   assert.match(html, /href="\?days=7&amp;view=sink&amp;ip=192\.0\.2\.50"/)
   assert.match(html, /env bait served/)
   assert.deepEqual(toJSON(model, config, { filters: f }).sink.bait, [["bait:env", 2], ["use:env", 1]])

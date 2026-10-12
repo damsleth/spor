@@ -360,7 +360,7 @@ export function queries(days, host, config, now = Date.now(), filters = {}) {
     ...(f.view === "sink"
       ? {
         sinkkinds: `SELECT blob17 AS kind, index1 AS host, ${n} ${from} GROUP BY kind, host ORDER BY n DESC, kind, host LIMIT 200 FORMAT JSON`,
-        sinkuse: `SELECT toStartOfInterval(timestamp, INTERVAL '1' HOUR) AS at, index1 AS host, blob1 AS path, blob17 AS kind, blob18 AS ctx, blob14 AS ip, blob12 AS asorg, blob4 AS country, ${n} ${from} AND blob17 LIKE 'use:%' GROUP BY at, host, path, kind, ctx, ip, asorg, country ORDER BY at DESC, host, path, kind, ctx, ip, asorg, country LIMIT ${LIMITS.canaries} FORMAT JSON`
+        sinkuse: `SELECT toStartOfInterval(timestamp, INTERVAL '1' HOUR) AS at, index1 AS host, blob1 AS path, blob17 AS kind, blob18 AS ctx, blob14 AS ip, blob12 AS asorg, blob4 AS country, blob3 AS ua, blob8 AS method, ${n} ${from} AND blob17 LIKE 'use:%' GROUP BY at, host, path, kind, ctx, ip, asorg, country, ua, method ORDER BY at DESC, host, path, kind, ctx, ip, asorg, country, ua, method LIMIT ${LIMITS.canaries} FORMAT JSON`
       }
       : {}),
     // every host in the window, whatever the selection and filters: the service chips
@@ -515,7 +515,7 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
     const parts = String(r.ctx || "").split("|")
     const [host, ip, at, kind] = parts
     const from = parts.length === 4 && HOSTNAME.test(normalizeHost(host)) && BAIT_KINDS.includes(kind) ? { host: normalizeHost(host), ip, at, kind } : null
-    return { at: String(r.at).slice(0, 16), host: normalizeHost(r.host), path: r.path, kind: String(r.kind).replace(/^use:/, ""), ip: r.ip || "", asorg: r.asorg || "", country: r.country || "", n: num(r.n), from }
+    return { at: String(r.at).slice(0, 16), host: normalizeHost(r.host), path: r.path, kind: String(r.kind).replace(/^use:/, ""), ip: r.ip || "", asorg: r.asorg || "", country: r.country || "", ua: r.ua || "", method: r.method || "", n: num(r.n), from }
   })
   // every host in the window, for the service chips (a Map: normalized host -> requests)
   model.hosts = new Map()
@@ -912,6 +912,7 @@ td.n{width:56px;text-align:right;font-variant-numeric:tabular-nums;padding-left:
 .pielegend li{display:flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}.pielegend i{width:9px;height:9px;border-radius:2px;flex:none}
 .pielegend .c2{background:var(--c2)}.pielegend .c3{background:var(--c3)}.pielegend .c4{background:var(--c4)}.pielegend .c5{background:var(--c5)}.pielegend .co{background:var(--co)}
 @media (max-width:520px){.chart{grid-template-columns:1fr}}
+.alerts .ua{font-size:12px}.alerts .method{font-size:11px;font-weight:600;color:var(--muted)}
 .alerts{margin-bottom:16px;table-layout:auto}.alerts th{text-align:left;font-size:12px;color:var(--muted);font-weight:600;padding:2px 8px 4px 0}.alerts td{padding:3px 8px 3px 0;vertical-align:top;overflow-wrap:anywhere}
 .map{display:block;width:100%;height:auto}.map .land{fill:var(--soft);stroke:var(--line);stroke-width:.6;pointer-events:none}
 .map circle{fill:var(--accent);fill-opacity:.45;stroke:var(--accent);stroke-width:1}.map circle.sel{fill:var(--sel);fill-opacity:.8;stroke:var(--sel)}
@@ -927,11 +928,13 @@ function sinkSection(model, state) {
     const href = filterLink(state, "ip", ip)
     return href ? `<a href="${href}">${escapeHtml(ip)}</a>` : escapeHtml(ip || "?")
   }
-  const rows = uses.map((u) => `<tr><td>${escapeHtml(u.at)}</td><td>${ipCell(u.ip)} <span class="muted">${escapeHtml([u.asorg, u.country].filter(Boolean).join(" · "))}</span></td><td>${escapeHtml(u.host + u.path)}</td><td>${u.from ? `${escapeHtml(u.from.kind)} bait on ${escapeHtml(u.from.host)}${u.from.ip ? `, to ${ipCell(u.from.ip)}` : ""} at ${escapeHtml(u.from.at)}` : "unknown bait"}</td><td class="n">${u.n}</td></tr>`).join("")
+  // each use: when, who (IP, network, country, user agent), the request (method, host, path), and
+  // the probe its key came from
+  const rows = uses.map((u) => `<tr><td>${escapeHtml(u.at)}</td><td>${ipCell(u.ip)} <span class="muted">${escapeHtml([u.asorg, u.country].filter(Boolean).join(" · "))}</span><br><span class="muted ua">${escapeHtml(u.ua || "no user agent")}</span></td><td><b class="method">${escapeHtml(u.method || "?")}</b> ${escapeHtml(u.host + u.path)}${u.n > 1 ? ` <span class="muted">×${u.n}</span>` : ""}</td><td>${u.from ? `${escapeHtml(u.from.kind)} bait on ${escapeHtml(u.from.host)}${u.from.ip ? `, to ${ipCell(u.from.ip)}` : ""} at ${escapeHtml(u.from.at)}` : "unknown bait"}</td></tr>`).join("")
   const kinds = new Map([...(model.sinkkinds || [])].map(([k, n]) => [k, n]))
   const label = (k) => (k.startsWith("bait:") ? `${k.slice(5)} bait served` : k.startsWith("use:") ? `${k.slice(4)} key used` : k === "challenge" ? "/_internal/ without a key" : k)
   return `<section class="card"><header><h2>Sinkhole <span class="desc">Probes for secrets get bait with canary keys; a key in use points back at the probe that took it.</span></h2></header>
-${uses.length ? `<table class="alerts"><caption>canary alerts</caption><tr><th>hour (UTC)</th><th>used by</th><th>on</th><th>key from</th><th class="n">n</th></tr>${rows}</table>` : `<p class="muted">No canary key has been used in this window.</p>`}
+${uses.length ? `<table class="alerts"><caption>canary alerts</caption><tr><th>hour (UTC)</th><th>used by</th><th>request</th><th>key from</th></tr>${rows}</table>` : `<p class="muted">No canary key has been used in this window.</p>`}
 <div class="grid">${table("sinkhole events", kinds, { label })}</div>
 </section>`
 }
