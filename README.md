@@ -13,10 +13,10 @@ language.
 - **Private by default.** It records no IP and no query string, and reduces
   referers to their origin. Attacker-written values are escaped under a
   no-script CSP, and the dashboard is behind Basic auth.
-- **Everything you host.** Workers sites write their own data point (see
-  `snippets/`). Anything else behind the Cloudflare proxy, such as nginx on a
-  VPS, a Pi on your tailnet or Azure, is counted by the pass-through `tap/`
-  Worker.
+- **Everything you host.** The pass-through `tap/` Worker counts anything behind
+  the Cloudflare proxy, such as nginx on a VPS, a Pi on your tailnet or Azure.
+  With wildcard routes it counts every proxied host in a zone, Worker sites
+  included. Workers sites can also write their own data point (see `snippets/`).
 - **Agent-led setup.** [AGENTS.md](AGENTS.md) is written so that an agent can
   stand up an instance end to end.
 - **Or self-hosted.** `spor serve` runs the same dashboard and API from one Node

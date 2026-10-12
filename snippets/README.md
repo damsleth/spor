@@ -1,6 +1,9 @@
 # Counting a site that is already a Cloudflare Worker
 
 Sites served by their own Worker write the data point themselves; no route Worker in front.
+An instance with wildcard tap routes already counts a Worker site on a custom domain, because a
+route runs in front of it. There, add a snippet only for a hash-routed app, and list its host in
+the tap's `SELF_COUNTED`.
 Both cases below need the Analytics Engine binding in the site's wrangler config. Without it
 the tap does nothing (by design it never fails the request), so verify a recorded point after
 deploying:

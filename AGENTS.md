@@ -36,7 +36,9 @@ count, and a dashboard hostname. Everything else is checkable.
    tap routes.
 6. **Write side, per host:**
    - A Workers site gets the tap from `snippets/`, on that site's own repo.
-   - A proxied non-Worker host gets a route in `tap/wrangler.jsonc`.
+   - A proxied non-Worker host gets a route in `tap/wrangler.jsonc`. A wildcard pair per zone
+     (`*.zone/*`, `zone/*`) counts every proxied host, Worker custom domains included. Then
+     list the hosts that tap themselves, and the dashboard's own, in `vars.SELF_COUNTED`.
    - A DNS-only host must be orange-clouded first. Ask the owner, and mention
      WebSockets and Cloudflare's 100 s idle timeout.
 7. **Deploy:** `npx wrangler login`, `npx wrangler deploy` (it answers 503 until the

@@ -4,6 +4,9 @@
 // Engine data point with the schema every spor site shares:
 // indexes [host], blobs [path, refererOrigin, userAgent, country, status, botCategory, origin, method],
 // doubles [1]. No IP, no query string. A failed write never affects the response.
+// A route runs in front of a Worker's custom domain too, so wildcard routes count Worker sites as
+// well. vars.SELF_COUNTED lists the hosts whose own Worker already writes the point (snippets/):
+// those pass through unrecorded, so nothing is counted twice.
 function originOf(value) {
   if (!value) return ""
   try {
@@ -35,7 +38,8 @@ export default {
   async fetch(request, env) {
     const response = await fetch(request)
     try {
-      env.SPOR_ANALYTICS?.writeDataPoint(dataPoint(request, response.status))
+      // ponytail: linear scan of a short list; a Set if it ever holds hundreds of hosts
+      if (!env.SELF_COUNTED?.includes(new URL(request.url).hostname)) env.SPOR_ANALYTICS?.writeDataPoint(dataPoint(request, response.status))
     } catch {
       // analytics must never break the site
     }
