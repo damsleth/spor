@@ -162,3 +162,36 @@ test("a tab in a network name keeps the agents tuple at [class, name, count]", (
   const model = build({ agents: [{ host: "blog.example.com", ua: chrome, bot: "", asorg: "Amazon\tNetwork", n: 2 }] }, config)
   assert.deepEqual(toJSON(model, config).hosts[0].agents, [["cloud", "Amazon\tNetwork", 2]])
 })
+
+test("aliases fold into their service; a selection covers a service's names and trailing dots", async () => {
+  const { loadConfig, selectedHosts, validHost } = await import("../src/report.js")
+  const cfg = loadConfig({ services: { "example.com": "site", "blog.example.com": "blog" }, aliases: { "www.example.com": "example.com", "Example.NET": "example.com" } })
+  assert.deepEqual(selectedHosts("example.com", cfg).sort(), ["example.com", "example.com.", "example.net", "example.net.", "www.example.com", "www.example.com."])
+  assert.deepEqual(selectedHosts("www.example.com", cfg), ["www.example.com", "www.example.com."], "an alias alone is just that name")
+  assert.equal(validHost("example.com,blog.example.com", cfg), "example.com,blog.example.com")
+  for (const bad of [{ "a.example": "a.example" }, { "a.example": "b.example", "b.example": "c.example" }, { "x'y": "a.example" }]) {
+    assert.throws(() => loadConfig({ aliases: bad }), /config\.aliases/, JSON.stringify(bad))
+  }
+  const q = queries(7, "example.com", cfg)
+  assert.match(q.totals, /index1 IN \('example\.com', 'example\.com\.', 'www\.example\.com', 'www\.example\.com\.', 'example\.net', 'example\.net\.'\)/)
+})
+
+test("the combined view sums services, names their hosts, and chips toggle a selection", async () => {
+  const { loadConfig } = await import("../src/report.js")
+  const cfg = loadConfig({ services: { "example.com": "site", "blog.example.com": "blog" }, aliases: { "www.example.com": "example.com" } })
+  const rows = {
+    totals: [{ host: "example.com", status: "200", n: 5 }, { host: "www.example.com", status: "200", n: 3 }, { host: "example.com.", status: "200", n: 1 }, { host: "blog.example.com", status: "200", n: 2 }],
+    ok: [{ host: "example.com", path: "/", ua: chrome, method: "GET", n: 5 }, { host: "blog.example.com", path: "/", ua: chrome, method: "GET", n: 2 }],
+    hosts: [{ host: "example.com", n: 6 }, { host: "www.example.com", n: 3 }, { host: "blog.example.com", n: 2 }]
+  }
+  const model = build(rows, cfg)
+  assert.equal(model.find((h) => h.host === "example.com").requests, 6, "the trailing-dot row folds into example.com")
+  const all = render(model, { days: 7, host: null, config: cfg, generated: "x" })
+  assert.match(all, /example\.com · site<\/a><\/span><\/div><\/td><td class="n">9</, "the service sums its hosts")
+  assert.match(all, /blog\.example\.com\/<\/a>/, "with several services, a page row names its service")
+  assert.match(all, /href="\?days=7&amp;host=example\.com">example\.com<\/a>/, "a chip adds its service")
+  assert.equal((all.match(/<section class="card">/g) || []).length, 1, "one combined card")
+  const one = render(build({ ...rows, totals: rows.totals.slice(0, 3) }, cfg), { days: 7, host: "example.com,blog.example.com", config: cfg, generated: "x" })
+  assert.match(one, /class="sel" href="\?days=7&amp;host=blog\.example\.com"[^>]*>example\.com ×/, "a selected chip removes itself")
+  assert.match(one, /host names/, "a service with several names lists them")
+})

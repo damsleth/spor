@@ -13,16 +13,22 @@ test("days is an int in [1, 31]; anything else falls back to the default", () =>
   for (const bad of [null, undefined, "", "abc", "7; DROP", "-1", "1e3", "7 ", " 7"]) assert.equal(clampDays(bad), DEFAULT_DAYS, String(bad))
 })
 
-test("host must be one of the known hosts", () => {
+test("host is one or more host names; anything that isn't one is dropped", () => {
   assert.equal(validHost("blog.example.com", config), "blog.example.com")
-  for (const bad of ["x' OR 1=1 --", "evil.example", "", null, "BLOG.EXAMPLE.COM"]) assert.equal(validHost(bad, config), null, String(bad))
+  assert.equal(validHost("BLOG.EXAMPLE.COM.,new.example,blog.example.com", config), "blog.example.com,new.example", "lowercased, trailing dot dropped, deduplicated")
+  assert.equal(validHost("x' OR 1=1 --,app.example.net", config), "app.example.net")
+  for (const bad of ["x' OR 1=1 --", "", null, ",", "a..b", "-a.example", "a b"]) assert.equal(validHost(bad, config), null, String(bad))
+  assert.equal(validHost(Array.from({ length: 30 }, (_, i) => `h${i}.example`).join(","), config).split(",").length, 20)
 })
 
 test("SQL only ever interpolates a computed window start and an allowlisted host", () => {
   const q = queries("7", "blog.example.com", config)
+  // hosts lists every host for the service chips, so it alone ignores the selection
+  assert.doesNotMatch(q.hosts, /index1 IN/)
+  delete q.hosts
   for (const sql of Object.values(q)) {
     assert.match(sql, new RegExp(`toDateTime\\('${windowStart(7)}'\\)`))
-    assert.match(sql, /index1 = 'blog\.example\.com'/)
+    assert.match(sql, /index1 IN \('blog\.example\.com', 'blog\.example\.com\.'\)/)
     assert.match(sql, /FROM spor_analytics WHERE/)
     assert.match(sql, /SUM\(_sample_interval\) AS n|count\(DISTINCT blob13\) AS v/)
     assert.match(sql, /FORMAT JSON$/)
@@ -31,7 +37,7 @@ test("SQL only ever interpolates a computed window start and an allowlisted host
   for (const sql of Object.values(hostile)) {
     assert.doesNotMatch(sql, /OR 1=1|OR '1'/)
     assert.match(sql, new RegExp(`toDateTime\\('${windowStart(DEFAULT_DAYS)}'\\)`))
-    assert.doesNotMatch(sql, /index1 =/)
+    assert.doesNotMatch(sql, /index1 IN/)
   }
   assert.match(queries(7, null, config).ok, /LIMIT \d+/)
 })
@@ -86,7 +92,7 @@ test("render escapes every attacker-written value", () => {
   assert.doesNotMatch(html, /<script>alert/)
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/)
   assert.match(html, /&lt;now&gt;/)
-  assert.match(html, /<h2>blog\.example\.com <span class="desc">personal tech blog<\/span><\/h2>/)
+  assert.match(html, /blog\.example\.com · personal tech blog/, "the services table names each service")
   assert.match(html, /title="CORS proxy with allowlist and secret substitution">proxy\.example\.net<\/a>/)
   assert.equal(escapeHtml(`"'<>&`), "&quot;&#39;&lt;&gt;&amp;")
   assert.match(render([], { days: 1, host: null, config, generated: "x" }), /No data in this window/)
@@ -164,7 +170,6 @@ test("config: defaults, lowercased hosts, and a dataset name that can't inject S
   assert.equal(empty.dataset, "spor_analytics")
   assert.equal(empty.title, "spor")
   assert.deepEqual(empty.hosts, [])
-  assert.equal(validHost("blog.example.com", empty), null, "no configured hosts, no host filter")
   assert.deepEqual(loadConfig({ services: { "Blog.Example.COM": "x" } }).hosts, ["blog.example.com"])
   assert.equal(loadConfig(JSON.stringify(raw)).services["proxy.example.net"], raw.services["proxy.example.net"])
   for (const bad of ["x; DROP TABLE y", "a-b", "spor analytics", "t'"]) assert.throws(() => loadConfig({ dataset: bad }), /dataset/, bad)

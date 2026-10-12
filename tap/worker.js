@@ -25,7 +25,8 @@ export function dataPoint(request, status, { visitor = "", ip = "" } = {}) {
   const url = new URL(request.url)
   const cf = request.cf || {}
   return {
-    indexes: [url.hostname],
+    // one name per host: "example.com." (a fully qualified name some clients send) is example.com
+    indexes: [url.hostname.replace(/\.$/, "")],
     blobs: [
       url.pathname.slice(0, 64),
       originOf(request.headers.get("referer")),
@@ -85,7 +86,7 @@ export async function visitorId(request, env, ip, now = Date.now()) {
 
 export async function record(request, status, env) {
   try {
-    const host = new URL(request.url).hostname
+    const host = new URL(request.url).hostname.replace(/\.$/, "")
     if (env.SELF_COUNTED?.includes(host) || !env.SPOR_ANALYTICS) return
     const ip = request.headers.get("cf-connecting-ip") || ""
     const visitor = await visitorId(request, env, ip)

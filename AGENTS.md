@@ -32,8 +32,8 @@ count, and a dashboard hostname. Everything else is checkable.
    and `tap/wrangler.example.jsonc` (after `mkdir -p tap`), and point their entry points
    into the submodule: `"main": "spor/src/worker.js"` in `wrangler.jsonc` and
    `"main": "../spor/tap/worker.js"` in `tap/wrangler.jsonc`. Then fill in `vars.SPOR.services` (host to a
-   short, evidence-based description), `proxyHosts`, the dashboard route and the
-   tap routes.
+   short, evidence-based description), `aliases` (other names of a service, such as
+   `www.`), `proxyHosts`, the dashboard route and the tap routes.
 6. **Write side, per host:**
    - A Workers site gets the tap from `snippets/`, on that site's own repo.
    - A proxied non-Worker host gets a route in `tap/wrangler.jsonc`. A wildcard pair per zone
@@ -77,8 +77,10 @@ count, and a dashboard hostname. Everything else is checkable.
 - **Every stored value is attacker-written.** Escape everything you render with
   `escapeHtml`, and keep the no-script CSP (`default-src 'none'; style-src
   'unsafe-inline'`): no external CSS, fonts or JavaScript. Inline SVG is fine.
-- **Only validated values reach SQL:** `days` is an integer from 1 to 31, `host`
-  must be a configured host, and `dataset` must match `[A-Za-z0-9_]+`. Filters
+- **Only validated values reach SQL:** `days` is an integer from 1 to 31, `host` is up to
+  20 comma-separated names that each match the hostname pattern (a service expands to its
+  `aliases`, and every name to its trailing-dot form), and `dataset` must match
+  `[A-Za-z0-9_]+`. Filters
   (`parseFilters`) are dropped unless they match: `country` `[A-Z0-9]{2}`, `asn` digits,
   `day` a real date within AE's 92 days, `class` a class id, `path` printable ASCII
   without `'` or `\`, `ip` an IPv4 or IPv6 address. AE SQL has no bound parameters, so

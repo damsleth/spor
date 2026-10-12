@@ -11,6 +11,7 @@ export function loadConfig(raw) {
   if (c.services !== undefined && !isObject(c.services)) throw new Error("spor: config.services must be an object of host -> description")
   if (c.proxyHosts !== undefined && !Array.isArray(c.proxyHosts)) throw new Error("spor: config.proxyHosts must be an array")
   if (c.local !== undefined && !Array.isArray(c.local)) throw new Error("spor: config.local must be an array")
+  if (c.aliases !== undefined && !isObject(c.aliases)) throw new Error("spor: config.aliases must be an object of host -> service host")
   if (c.recordIp !== undefined && typeof c.recordIp !== "boolean") throw new Error("spor: config.recordIp must be true or false")
   for (const k of ["title", "dataset", "llm"]) {
     if (c[k] !== undefined && typeof c[k] !== "string") throw new Error(`spor: config.${k} must be a string`)
@@ -20,7 +21,13 @@ export function loadConfig(raw) {
   const services = Object.fromEntries(Object.entries(c.services || {}).map(([h, d]) => [String(h).toLowerCase(), String(d)]))
   // hosts reach SQL as literals (index1 = '<host>'), so only hostname characters are allowed
   for (const h of Object.keys(services)) {
-    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(h)) throw new Error(`spor: config.services has an invalid host name: ${JSON.stringify(h)}`)
+    if (!HOSTNAME.test(h)) throw new Error(`spor: config.services has an invalid host name: ${JSON.stringify(h)}`)
+  }
+  // aliases: other names of one service (www.example.com -> example.com), counted as that service
+  const aliases = Object.fromEntries(Object.entries(c.aliases || {}).map(([a, s]) => [String(a).toLowerCase(), String(s).toLowerCase()]))
+  for (const [a, s] of Object.entries(aliases)) {
+    if (!HOSTNAME.test(a) || !HOSTNAME.test(s)) throw new Error(`spor: config.aliases has an invalid host name: ${JSON.stringify(a)} -> ${JSON.stringify(s)}`)
+    if (a === s || s in aliases) throw new Error(`spor: config.aliases must point at a service, not at itself or another alias: ${a} -> ${s}`)
   }
   // hosts the self-hosted backend counts itself (nginx log or /api/ingest); each must be a configured host
   const local = (c.local || []).map((h) => String(h).toLowerCase())
@@ -34,10 +41,19 @@ export function loadConfig(raw) {
     hosts: Object.keys(services),
     proxyHosts: new Set((c.proxyHosts || []).map((h) => String(h).toLowerCase())),
     local: new Set(local),
+    aliases,
     // the self-hosted backend stores client IPs only when this is true (the tap has RECORD_IP)
     recordIp: c.recordIp === true
   }
 }
+
+const HOSTNAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/
+export const MAX_HOSTS = 20
+
+// A host as one name: lowercase, without the trailing dot of a fully qualified name ("example.com.")
+export const normalizeHost = (h) => String(h || "").toLowerCase().replace(/\.$/, "")
+// the service a host belongs to: itself, or the service its alias points at
+export const serviceOf = (host, config) => config.aliases?.[normalizeHost(host)] || normalizeHost(host)
 
 export const DEFAULT_DAYS = 7
 export const MAX_DAYS = 31
@@ -147,8 +163,30 @@ export function clampDays(value) {
   return Math.min(MAX_DAYS, Math.max(1, Number(value)))
 }
 
+// ?host=: one or more services or host names, comma-separated. Every name must look like a host
+// name (so it is safe as a SQL literal); the rest are dropped. Returns "a,b" or null for all hosts.
 export function validHost(value, config) {
-  return config.hosts.includes(value) ? value : null
+  if (typeof value !== "string") return null
+  const names = [...new Set(value.split(",").map(normalizeHost).filter((h) => h.length <= 253 && HOSTNAME.test(h)))].slice(0, MAX_HOSTS)
+  return names.length ? names.join(",") : null
+}
+
+// The host names a ?host= selection covers: a service brings its aliases; every name also matches
+// its fully qualified form with a trailing dot, which some clients send
+export function selectedHosts(host, config) {
+  if (!host) return []
+  const out = new Set()
+  for (const name of host.split(",")) {
+    out.add(name)
+    for (const [a, s] of Object.entries(config.aliases || {})) if (s === name) out.add(a)
+  }
+  return [...out].flatMap((h) => [h, `${h}.`])
+}
+
+// the host condition for queries(): AE gets quoted literals, SQLite placeholders through lit
+export function hostSql(host, config, col, lit) {
+  const names = selectedHosts(host, config)
+  return names.length ? ` AND ${col} IN (${names.map(lit).join(", ")})` : ""
 }
 
 // The window is whole UTC calendar days ending today, the same days the charts show
@@ -255,7 +293,7 @@ export function queries(days, host, config, now = Date.now(), filters = {}) {
   const f = parseFilters(new URLSearchParams(Object.entries(filters).filter(([, v]) => typeof v === "string")), now)
   const w = span(d, f, now)
   const c = AE_COLUMNS
-  const from = `FROM ${config.dataset} WHERE timestamp >= toDateTime('${w.from}') AND timestamp < toDateTime('${w.to}')` + (h ? ` AND index1 = '${h}'` : "") + filterSql(f, c, (v) => `'${v}'`)
+  const from = `FROM ${config.dataset} WHERE timestamp >= toDateTime('${w.from}') AND timestamp < toDateTime('${w.to}')` + hostSql(h, config, "index1", (v) => `'${v}'`) + filterSql(f, c, (v) => `'${v}'`)
   const n = "SUM(_sample_interval) AS n"
   const ok = "blob5 >= '200' AND blob5 < '300'"
   // tables of people (cities, visitors) follow a class filter when there is one
@@ -272,6 +310,8 @@ export function queries(days, host, config, now = Date.now(), filters = {}) {
     agents: `SELECT index1 AS host, blob3 AS ua, blob6 AS bot, blob12 AS asorg, ${n} ${from} AND NOT ${human} GROUP BY host, ua, bot, asorg ORDER BY n DESC, host, ua, bot, asorg LIMIT ${LIMITS.agents} FORMAT JSON`,
     visitors: `SELECT index1 AS host, toStartOfInterval(timestamp, INTERVAL '1' DAY) AS day, count(DISTINCT blob13) AS v ${from} AND blob13 != ''${people} GROUP BY host, day FORMAT JSON`,
     ips: `SELECT index1 AS host, blob14 AS ip, blob12 AS asorg, blob4 AS country, ${n} ${from} AND blob14 != '' GROUP BY host, ip, asorg, country ORDER BY n DESC, host, ip, asorg, country LIMIT ${LIMITS.ips} FORMAT JSON`,
+    // every host in the window, whatever the selection and filters: the service chips
+    hosts: `SELECT index1 AS host, ${n} FROM ${config.dataset} WHERE timestamp >= toDateTime('${w.from}') AND timestamp < toDateTime('${w.to}') GROUP BY host ORDER BY n DESC, host LIMIT 200 FORMAT JSON`,
     // toDayOfWeek: 1 = Monday ... 7 = Sunday, UTC
     heat: `SELECT toDayOfWeek(timestamp) AS dow, toHour(timestamp) AS hr, ${n} ${from} GROUP BY dow, hr FORMAT JSON`
   }
@@ -317,10 +357,11 @@ export function agentName(row, id = classOf(row)) {
 
 // filtered: a class filter is on, so every detail row already belongs to the class asked for and
 // the page tables show its fetches, not only people's
-export function build({ totals = [], daily = [], ok = [], paths = [], origins = [], geo = [], networks = [], agents = [], visitors = [], ips = [], heat = [] }, config, { hourly = false, filtered = false } = {}) {
+export function build({ totals = [], daily = [], ok = [], paths = [], origins = [], geo = [], networks = [], agents = [], visitors = [], ips = [], heat = [], hosts: seen = [] }, config, { hourly = false, filtered = false } = {}) {
   const classify = classifier()
   const hosts = new Map()
-  const get = (name) => {
+  const get = (raw) => {
+    const name = normalizeHost(raw)
     if (!hosts.has(name)) {
       hosts.set(name, {
         host: name, requests: 0, ok2xx: 0, humans2xx: 0, pageviews: 0, bots: 0, visitors: 0, status: new Map(), daily: new Map(), pages: new Map(),
@@ -388,6 +429,9 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
   // the detail query is capped: if it came back full, human counts are a lower bound
   model.partial = ok.length >= OK_LIMIT
   model.hourly = hourly
+  // every host in the window, for the service chips (a Map: normalized host -> requests)
+  model.hosts = new Map()
+  for (const r of seen) model.hosts.set(normalizeHost(r.host), (model.hosts.get(normalizeHost(r.host)) || 0) + num(r.n))
   // requests by weekday (1 = Monday) and UTC hour, all hosts in the filter
   model.heat = Array.from({ length: 7 }, () => new Array(24).fill(0))
   for (const r of heat) {
@@ -404,7 +448,7 @@ export function toJSON(model, config, { days, host, filters = {} } = {}) {
   return {
     days, host: host || null, filters, partial: Boolean(model.partial), heat: model.heat,
     hosts: model.map((h) => ({
-      host: h.host, description: config.services[h.host] || null,
+      host: h.host, service: serviceOf(h.host, config), description: config.services[h.host] || config.services[serviceOf(h.host, config)] || null,
       requests: h.requests, ok2xx: h.ok2xx, pageviews: h.pageviews, bots: h.bots, visitors: h.visitors,
       status: top(h.status), daily: [...h.daily.entries()].sort(), pages: top(h.pages), referers: top(h.referers),
       countries: top(h.countries), browsers: top(h.browsers), probes: top(h.probes), targets: top(h.targets), origins: top(h.origins),
@@ -513,19 +557,56 @@ const fmt = (n) => n.toLocaleString("en-US")
 // when the detail query is capped, humans are a lower bound, so bots (2xx - humans) are an upper bound
 const shareText = (share, capped) => (capped ? `≤${share}%` : `${share}%`)
 
-function hostSection(h, window, services, capped, state) {
-  const share = h.ok2xx ? Math.round((h.bots / h.ok2xx) * 100) : 0
-  const desc = services[h.host]
-  const here = { ...state, host: h.host }
-  const by = (key) => ({ link: (k) => filterLink(here, key, k) })
-  const agents = new Map([...h.agents].map(([k, n]) => [k, n]))
-  return `<section class="card${h.pageviews ? "" : " quiet"}">
-<header><h2>${escapeHtml(h.host)}${desc ? ` <span class="desc">${escapeHtml(desc)}</span>` : ""}</h2></header>
-<p class="summary"><b>${fmt(h.requests)}</b> requests · <b>${fmt(h.pageviews)}</b> human page views${h.visitors ? ` · <b>${fmt(h.visitors)}</b> unique visitors` : ""} · ${shareText(share, capped)} of 2xx from bots${capped ? " (upper bound)" : ""}</p>
-${bars(h.daily, window, `${h.host} requests`, false, (day) => hrefFor(here, { day }))}
-${statusMix(h.status)}
+// Hosts folded into services (aliases and trailing dots count as their service), every breakdown
+// summed across them. With more than one service in view, page and probe rows carry their service.
+function combine(model, config) {
+  const add = (map, k, n) => map.set(k, (map.get(k) || 0) + n)
+  const merge = (to, from, key = (k) => k) => { for (const [k, n] of from) add(to, key(k), n) }
+  const services = new Map()
+  for (const h of model) {
+    const name = serviceOf(h.host, config)
+    const s = services.get(name) || { service: name, requests: 0, pageviews: 0, visitors: 0, ok2xx: 0, bots: 0, hosts: new Map() }
+    for (const k of ["requests", "pageviews", "visitors", "ok2xx", "bots"]) s[k] += h[k]
+    add(s.hosts, h.host, h.requests)
+    services.set(name, s)
+  }
+  const multi = services.size > 1
+  const c = { services, multi, names: new Map(), hostnames: new Map() }
+  for (const k of ["requests", "pageviews", "visitors", "ok2xx", "bots"]) c[k] = model.reduce((t, h) => t + h[k], 0)
+  for (const k of ["status", "daily", "referers", "countries", "cities", "browsers", "networks", "classes", "agents", "ips", "origins", "pages", "probes", "targets"]) c[k] = new Map()
+  for (const h of model) {
+    const svc = serviceOf(h.host, config)
+    // a page or probe key is "<service>\t<path>" when several services are in view
+    const scoped = (p) => (multi ? `${svc}\t${p}` : p)
+    for (const k of ["status", "daily", "referers", "countries", "cities", "browsers", "networks", "classes", "agents", "ips", "origins", "targets"]) merge(c[k], h[k])
+    merge(c.pages, h.pages, scoped)
+    merge(c.probes, h.probes, scoped)
+    for (const [k, v] of h.names) c.names.set(k, v)
+    add(c.hostnames, h.host, h.requests)
+  }
+  return c
+}
+
+// One card for everything in view: the selected services, or all of them
+function combinedSection(c, window, config, capped, state) {
+  const share = c.ok2xx ? Math.round((c.bots / c.ok2xx) * 100) : 0
+  const by = (key) => ({ link: (k) => filterLink(state, key, k) })
+  const tab = (k) => k.indexOf("\t")
+  // a scoped page row: "<service><path>", linking to that service and path
+  const scoped = c.multi
+    ? { label: (k) => `${k.slice(0, tab(k))}${k.slice(tab(k) + 1)}`, link: (k) => filterLink({ ...state, host: k.slice(0, tab(k)) }, "path", k.slice(tab(k) + 1)) }
+    : by("path")
+  const services = new Map([...c.services].map(([name, s]) => [name, s.requests]))
+  const only = c.services.size === 1 ? [...c.services.keys()][0] : null
+  const desc = only ? config.services[only] : ""
+  const named = c.hostnames.size > c.services.size
+  return `<section class="card">
+${only ? `<header><h2>${escapeHtml(only)}${desc ? ` <span class="desc">${escapeHtml(desc)}</span>` : ""}</h2></header>` : ""}
+<p class="summary"><b>${fmt(c.requests)}</b> requests · <b>${fmt(c.pageviews)}</b> human page views${c.visitors ? ` · <b>${fmt(c.visitors)}</b> unique visitors` : ""} · ${shareText(share, capped)} of 2xx from bots${capped ? " (upper bound)" : ""}</p>
+${bars(c.daily, window, "requests", true, (day) => hrefFor(state, { day }))}
+${statusMix(c.status)}
 <div class="grid">
-${table("pages", h.pages, by("path"))}${table("referers", h.referers)}${table("countries", h.countries, by("country"))}${table("cities", h.cities)}${table("browsers", h.browsers)}${table("networks", h.networks, { label: (asn) => `AS${asn} ${h.names.get(`as:${asn}`) || ""}`.trim(), ...by("asn") })}${table("bots and AI", h.classes, { label: classLabel, ...by("class") })}${table("agents", agents, { label: (k) => k.slice(k.indexOf("\t") + 1), link: (k) => filterLink(here, "class", k.slice(0, k.indexOf("\t"))) })}${table("IP addresses", h.ips, { label: (ip) => `${ip} ${h.names.get(`ip:${ip}`) || ""}`.trim(), ...by("ip") })}${table("404s and probes", h.probes, by("path"))}${table("proxy targets", h.targets)}${table("proxy callers (Origin)", h.origins)}
+${c.multi ? table("services", services, { label: (k) => config.services[k] ? `${k} · ${config.services[k]}` : k, link: (k) => hrefFor(state, { host: k }) }) : ""}${named ? table("host names", c.hostnames, { link: (k) => hrefFor(state, { host: k }) }) : ""}${table("pages", c.pages, scoped)}${table("referers", c.referers)}${table("countries", c.countries, by("country"))}${table("cities", c.cities)}${table("browsers", c.browsers)}${table("networks", c.networks, { label: (asn) => `AS${asn} ${c.names.get(`as:${asn}`) || ""}`.trim(), ...by("asn") })}${table("bots and AI", c.classes, { label: classLabel, ...by("class") })}${table("agents", c.agents, { label: (k) => k.slice(tab(k) + 1), link: (k) => filterLink(state, "class", k.slice(0, tab(k))) })}${table("IP addresses", c.ips, { label: (ip) => `${ip} ${c.names.get(`ip:${ip}`) || ""}`.trim(), ...by("ip") })}${table("404s and probes", c.probes, scoped)}${table("proxy targets", c.targets)}${table("proxy callers (Origin)", c.origins)}
 </div>
 </section>`
 }
@@ -544,7 +625,7 @@ h1{font-size:22px;font-weight:650;letter-spacing:-.01em;margin:0}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chips a{padding:2px 10px;border:1px solid var(--line);border-radius:999px;font-size:13px;color:var(--muted);background:var(--card)}
 .chips a:hover{color:var(--fg);text-decoration:none;border-color:var(--muted)}
-.chips b{padding:2px 10px;border-radius:999px;font-size:13px;background:var(--accent);color:var(--bg)}
+.chips b,.chips a.sel{padding:2px 10px;border-radius:999px;font-size:13px;background:var(--accent);color:var(--bg);border-color:var(--accent)}
 .note{border:1px solid var(--c4);border-left-width:4px;background:var(--card);border-radius:8px;padding:8px 12px;margin:0 0 16px;font-size:13px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
 .tile,.card{background:var(--card);border:1px solid var(--line);border-radius:12px}
@@ -584,38 +665,50 @@ td.n{width:56px;text-align:right;font-variant-numeric:tabular-nums;padding-left:
 @media (max-width:520px){body{padding:16px 12px 32px}.tile .v{font-size:24px}.card{padding:12px}}`
 
 // credit: an attribution line the backend owes (the self-hosted server's DB-IP data is CC BY 4.0)
+// credit: an attribution line the backend owes (the self-hosted server's DB-IP data is CC BY 4.0)
 export function render(model, { days, host, filters = {}, generated, config, cache = "cached up to 5 min", credit = "", today = new Date().toISOString().slice(0, 10) }) {
-  const services = config.services
   const state = { days, host, ...filters }
   // one day, by the hour, when the window is a day; whole days otherwise
   const window = filters.day || days === 1
     ? Array.from({ length: 24 }, (_, h) => `${filters.day || today} ${String(h).padStart(2, "0")}`)
     : windowDays(days, today)
+  const c = combine(model, config)
   const dayLinks = [1, 7, 31].map((d) => d === days && !filters.day ? `<b aria-current="true">${d}d</b>` : `<a href="${hrefFor(state, { days: d, day: null })}">${d}d</a>`).join("")
-  const hostLinks = [host ? `<a href="${hrefFor(state, { host: null })}">all</a>` : `<b aria-current="true">all</b>`, ...model.map((h) => `<a href="${hrefFor(state, { host: h.host })}"${services[h.host] ? ` title="${escapeHtml(services[h.host])}"` : ""}>${escapeHtml(h.host)}</a>`)].join("")
+  // every service seen in the window, busiest first; a chip adds its service to the selection or
+  // takes it out, so one or several can be in view
+  const selected = host ? host.split(",") : []
+  const seen = new Map()
+  for (const [h, n] of model.hosts || []) seen.set(serviceOf(h, config), (seen.get(serviceOf(h, config)) || 0) + n)
+  // a result set without the hosts query (an older backend) still lists what it has
+  for (const h of model) if (!seen.has(serviceOf(h.host, config))) seen.set(serviceOf(h.host, config), h.requests)
+  for (const name of selected) if (!seen.has(name)) seen.set(name, 0)
+  const toggle = (name) => {
+    const next = selected.includes(name) ? selected.filter((x) => x !== name) : [...selected, name]
+    return hrefFor(state, { host: next.join(",") || null })
+  }
+  const chip = (name) => {
+    const title = config.services[name] ? ` title="${escapeHtml(config.services[name])}"` : ""
+    return selected.includes(name)
+      ? `<a class="sel" href="${toggle(name)}"${title} aria-current="true">${escapeHtml(name)} ×</a>`
+      : `<a href="${toggle(name)}"${title}>${escapeHtml(name)}</a>`
+  }
+  const hostLinks = [host ? `<a href="${hrefFor(state, { host: null })}">all</a>` : `<b aria-current="true">all</b>`, ...[...seen].sort((a, b) => b[1] - a[1]).map(([name]) => chip(name))].join("")
   const named = { class: classLabel }
   const active = FILTER_KEYS.filter((k) => filters[k]).map((k) => `<a href="${hrefFor(state, { [k]: null })}" title="remove this filter">${escapeHtml(k)}: ${escapeHtml(named[k] ? named[k](filters[k]) : filters[k])} ×</a>`).join("")
-  const total = model.reduce((s, h) => s + h.requests, 0)
-  const views = model.reduce((s, h) => s + h.pageviews, 0)
-  const visitors = model.reduce((s, h) => s + h.visitors, 0)
-  const ai = model.reduce((s, h) => s + [...h.classes].filter(([id]) => id.startsWith("ai-")).reduce((t, [, n]) => t + n, 0), 0)
-  const ok = model.reduce((s, h) => s + h.ok2xx, 0)
-  const bots = model.reduce((s, h) => s + h.bots, 0)
-  const share = ok ? Math.round((bots / ok) * 100) : 0
+  const ai = [...c.classes].filter(([id]) => id.startsWith("ai-")).reduce((t, [, n]) => t + n, 0)
+  const share = c.ok2xx ? Math.round((c.bots / c.ok2xx) * 100) : 0
   const span = filters.day ? escapeHtml(filters.day) : `last ${days} day${days === 1 ? "" : "s"}`
-  const sum = new Map()
-  for (const h of model) for (const [d, n] of h.daily) sum.set(d, (sum.get(d) || 0) + n)
+  const people = [...c.services.values()].filter((s) => s.pageviews).length
   const tiles = `<div class="tiles">
-<div class="tile"><div class="l">Requests</div><div class="v">${fmt(total)}</div><div class="s">${span}</div></div>
+<div class="tile"><div class="l">Requests</div><div class="v">${fmt(c.requests)}</div><div class="s">${span}</div></div>
 ${filters.class && filters.class !== "human"
-    ? `<div class="tile"><div class="l">Page views</div><div class="v">${fmt(views)}</div><div class="s">by ${escapeHtml(classLabel(filters.class))}</div></div>`
-    : `<div class="tile"><div class="l">Human page views</div><div class="v">${fmt(views)}</div><div class="s">bots and assets excluded</div></div>`}
-<div class="tile"><div class="l">Unique visitors</div><div class="v">${fmt(visitors)}</div><div class="s">people, counted per day</div></div>
+    ? `<div class="tile"><div class="l">Page views</div><div class="v">${fmt(c.pageviews)}</div><div class="s">by ${escapeHtml(classLabel(filters.class))}</div></div>`
+    : `<div class="tile"><div class="l">Human page views</div><div class="v">${fmt(c.pageviews)}</div><div class="s">bots and assets excluded</div></div>`}
+<div class="tile"><div class="l">Unique visitors</div><div class="v">${fmt(c.visitors)}</div><div class="s">people, counted per day</div></div>
 <div class="tile"><div class="l">Bot share</div><div class="v">${shareText(share, model.partial)}</div><div class="s">${model.partial ? "upper bound: the detail query hit its cap" : `${share}% of 2xx from bots`}</div></div>
 <div class="tile"><div class="l">AI requests</div><div class="v">${fmt(ai)}</div><div class="s"><a href="${hrefFor(state, { class: "ai-user" })}">assistants</a> · <a href="${hrefFor(state, { class: "ai-search" })}">search</a> · <a href="${hrefFor(state, { class: "ai-training" })}">training</a></div></div>
-<div class="tile"><div class="l">Hosts</div><div class="v">${model.length}</div><div class="s">${model.filter((h) => h.pageviews).length} with human traffic</div></div>
-</div>
-${model.length ? `<div class="card"><p class="cap">Requests per ${window[0].length > 10 ? "hour" : "day"}, all hosts</p>${bars(sum, window, "total requests", true, (day) => hrefFor(state, { day }))}${heatmap(model.heat || [])}</div>` : ""}`
+<div class="tile"><div class="l">Services</div><div class="v">${c.services.size}</div><div class="s">${people} with human traffic</div></div>
+</div>`
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex"><title>${escapeHtml(config.title)}</title>
@@ -623,11 +716,12 @@ ${model.length ? `<div class="card"><p class="cap">Requests per ${window[0].leng
 ${CSS}
 </style></head><body>
 <div class="top"><h1>${escapeHtml(config.title)}</h1>
-<p class="muted">${total} requests · ${span}${host ? ` · ${escapeHtml(host)}` : ""} · generated ${escapeHtml(generated)}${cache ? ` · ${escapeHtml(cache)}` : ""}</p></div>
-<nav class="bar" aria-label="filters"><div class="seg" aria-label="days">${dayLinks}</div><div class="chips" aria-label="hosts">${hostLinks}</div>${active ? `<div class="chips on" aria-label="active filters">${active}</div>` : ""}</nav>
+<p class="muted">${c.requests} requests · ${span}${host ? ` · ${escapeHtml(host.split(",").join(", "))}` : ""} · generated ${escapeHtml(generated)}${cache ? ` · ${escapeHtml(cache)}` : ""}</p></div>
+<nav class="bar" aria-label="filters"><div class="seg" aria-label="days">${dayLinks}</div><div class="chips" aria-label="services">${hostLinks}</div>${active ? `<div class="chips on" aria-label="active filters">${active}</div>` : ""}</nav>
 ${model.partial ? `<p class="note">Breakdowns are partial: the detail query hit its ${OK_LIMIT}-group cap, so human counts are a lower bound.</p>` : ""}
 ${model.length ? `${tiles}
-${model.map((h) => hostSection(h, window, services, model.partial, state)).join("\n")}` : `<p class="empty muted">No data in this window.</p>`}
+${heatmap(model.heat || []) ? `<div class="card"><p class="cap">Requests by weekday and hour (UTC)</p>${heatmap(model.heat || [])}</div>` : ""}
+${combinedSection(c, window, config, model.partial, state)}` : `<p class="empty muted">No data in this window.</p>`}
 ${credit ? `<p class="muted foot">${credit}</p>` : ""}
 </body></html>`
 }

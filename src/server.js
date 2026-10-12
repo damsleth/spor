@@ -40,7 +40,7 @@ function clean({ host, path, referer, ua, country, status, bot, origin, method, 
   // eslint-disable-next-line no-control-regex
   const s = (v, max) => (typeof v === "string" ? v : v === undefined || v === null ? "" : String(v)).replace(/[\x00-\x1f\x7f]/g, "").slice(0, max)
   return {
-    host: s(host, 253).toLowerCase(), path: s(path, 64), referer: s(referer, 256), ua: s(ua, 256), country: s(country, 8),
+    host: s(host, 253).toLowerCase().replace(/\.$/, ""), path: s(path, 64), referer: s(referer, 256), ua: s(ua, 256), country: s(country, 8),
     status: s(status, 3), bot: s(bot, 64), origin: s(origin, 256), method: s(method, 16),
     city: s(city, 64), region: s(region, 64), asn: /^\d{1,10}$/.test(s(asn, 10)) ? s(asn, 10) : "", asorg: s(asorg, 64),
     visitor: /^[0-9a-f]{16}$/.test(s(visitor, 16)) ? s(visitor, 16) : "", ip: s(ip, 45).toLowerCase()

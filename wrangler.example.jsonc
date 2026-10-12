@@ -19,6 +19,8 @@
         "blog.example.com": "personal blog",
         "proxy.example.com": "CORS proxy"
       },
+      // other names of a service, counted as that service; the dashboard lists them under it
+      "aliases": { "www.example.com": "example.com" },
       // hosts whose first path segment is a target host (shows "proxy targets/callers")
       "proxyHosts": ["proxy.example.com"],
       // self-hosted server only: store client IPs from nginx and ingest (the tap has RECORD_IP)

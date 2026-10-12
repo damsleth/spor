@@ -8,7 +8,7 @@
 // local point arrives for it: the next full hour (or this one, if AE has nothing for the host).
 // Before it the host comes from AE, from it on locally.
 import { DatabaseSync } from "node:sqlite"
-import { OK_LIMIT, LIMITS, clampDays, validHost, parseFilters, span, filterSql, classSql } from "./report.js"
+import { OK_LIMIT, LIMITS, clampDays, validHost, hostSql, parseFilters, span, filterSql, classSql } from "./report.js"
 
 export const HOUR = 3600
 // the Analytics Engine blobs in order (AE_COLUMNS in src/report.js), host first
@@ -101,8 +101,12 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
       const f = parseFilters(new URLSearchParams(Object.entries(filters).filter(([, v]) => typeof v === "string")), now)
       const w = span(clampDays(String(days)), f, now)
       const h = validHost(host, config)
-      const values = [w.fromSeconds, w.toSeconds, ...(h ? [h] : [])]
-      const where = `FROM hits WHERE hour >= ? AND hour < ?${h ? " AND host = ?" : ""}${filterSql(f, COLS, (v) => {
+      const values = [w.fromSeconds, w.toSeconds]
+      const bind = (v) => {
+        values.push(v)
+        return "?"
+      }
+      const where = `FROM hits WHERE hour >= ? AND hour < ?${hostSql(h, config, "host", bind)}${filterSql(f, COLS, (v) => {
         values.push(v)
         return "?"
       })}`
@@ -123,6 +127,7 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
         agents: all(`SELECT host, ua, bot, asorg, ${n} ${where} AND NOT ${human} GROUP BY host, ua, bot, asorg ORDER BY n DESC, host, ua, bot, asorg LIMIT ${LIMITS.agents}`),
         visitors: all(`SELECT host, strftime('%Y-%m-%d', hour, 'unixepoch') AS day, count(DISTINCT visitor) AS v ${where} AND visitor != ''${people} GROUP BY host, day`),
         ips: all(`SELECT host, ip, asorg, country, ${n} ${where} AND ip != '' GROUP BY host, ip, asorg, country ORDER BY n DESC, host, ip, asorg, country LIMIT ${LIMITS.ips}`),
+        hosts: db.prepare(`SELECT host, ${n} FROM hits WHERE hour >= ? AND hour < ? GROUP BY host ORDER BY n DESC, host LIMIT 200`).all(w.fromSeconds, w.toSeconds),
         // AE's toDayOfWeek numbering: 1 = Monday ... 7 = Sunday (SQLite's %w is 0 = Sunday)
         heat: all(`SELECT ((CAST(strftime('%w', hour, 'unixepoch') AS INTEGER) + 6) % 7) + 1 AS dow, CAST(strftime('%H', hour, 'unixepoch') AS INTEGER) AS hr, ${n} ${where} GROUP BY dow, hr`)
       }
