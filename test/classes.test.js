@@ -335,3 +335,16 @@ test("every chart label is escaped, and heatmap cells carry their hover label", 
   assert.match(html, /<title>Mon 09:00 UTC: 3 requests<\/title>/)
   assert.match(html, /<g class="tip">[^]*?Mon 09:00 UTC: 3 requests<\/text>/)
 })
+
+test("every line chart hit area stays inside the plot, edge to edge without gaps", () => {
+  for (const days of [1, 3, 7, 31]) {
+    const daily = Array.from({ length: days }, (_, i) => ({ day: `2026-10-${String(12 - days + 1 + i).padStart(2, "0")} 00:00:00`, host: "blog.example.com", n: i + 1 }))
+    const html = render(build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }], daily }, config, { hourly: days === 1 }), { days, host: null, config, generated: "x", today: "2026-10-12" })
+    const chart = html.slice(html.indexOf('<svg class="line"'), html.indexOf("</svg>", html.indexOf('<svg class="line"')))
+    const hits = [...chart.matchAll(/<rect class="hit" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"/g)].map((m) => [Number(m[1]), Number(m[1]) + Number(m[2])])
+    assert.equal(hits.length, days === 1 ? 24 : days, `${days} days`)
+    assert.equal(hits[0][0], 40)
+    assert.ok(Math.abs(hits.at(-1)[1] - 710) < 0.2, `${days} days: last ends at the plot's edge`)
+    for (let i = 1; i < hits.length; i++) assert.ok(Math.abs(hits[i][0] - hits[i - 1][1]) < 0.2, `${days} days: no gap or overlap at ${i}`)
+  }
+})

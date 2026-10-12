@@ -648,10 +648,13 @@ function lineChart(series, window, noun, dayLink = null) {
   const pts = vals.map((v, i) => `${fx(x(i))},${fx(y(v))}`)
   const line = `M${pts.join("L")}`
   const area = `${line}L${fx(x(vals.length - 1))},${fx(y(0))}L${fx(x(0))},${fx(y(0))}Z`
-  const step = window.length > 1 ? span / (window.length - 1) : span
+  // a point's hit area runs from the midpoint with its left neighbour to the one with its right, the
+  // first and last stopping at the plot's edges
+  const left = (i) => (i === 0 ? L : (x(i - 1) + x(i)) / 2)
+  const right = (i) => (i === window.length - 1 ? CW - R : (x(i) + x(i + 1)) / 2)
   const hover = window.map((k, i) => {
     const text = `${keyLabel(k)}: ${fmt(vals[i])} ${noun}`
-    const g = `<g class="pt"><rect class="hit" x="${fx(Math.max(L, x(i) - step / 2))}" y="${T}" width="${fx(Math.min(step, span))}" height="${CH - T - B}"/><line class="guide" x1="${fx(x(i))}" x2="${fx(x(i))}" y1="${T}" y2="${CH - B}"/><circle cx="${fx(x(i))}" cy="${fx(y(vals[i]))}" r="3.5"/>${tipBox(x(i), y(vals[i]), text, CW, CH)}<title>${escapeHtml(text)}</title></g>`
+    const g = `<g class="pt"><rect class="hit" x="${fx(left(i))}" y="${T}" width="${fx(right(i) - left(i))}" height="${CH - T - B}"/><line class="guide" x1="${fx(x(i))}" x2="${fx(x(i))}" y1="${T}" y2="${CH - B}"/><circle cx="${fx(x(i))}" cy="${fx(y(vals[i]))}" r="3.5"/>${tipBox(x(i), y(vals[i]), text, CW, CH)}<title>${escapeHtml(text)}</title></g>`
     return dayLink && k.length === 10 && vals[i] ? `<a href="${dayLink(k)}">${g}</a>` : g
   }).join("")
   return `<svg class="line" viewBox="0 0 ${CW} ${CH}" role="img" aria-label="${escapeHtml(noun)}, ${escapeHtml(window[0])} to ${escapeHtml(window[window.length - 1])}, peak ${fmt(Math.max(...vals))}">${grid}${xlabels}<path class="area" d="${area}"/><path class="stroke" d="${line}"/>${hover}</svg>`
@@ -761,7 +764,9 @@ function statusPie(status) {
   return `<div class="statusbox"><svg class="pie" viewBox="0 0 140 140" role="img" aria-label="status codes: ${escapeHtml(parts.map(({ k, v }) => `${k} ${pct(v)}`).join(", "))}"><text class="total" x="${C}" y="${C - 2}" text-anchor="middle">${short(total)}</text><text class="total sub" x="${C}" y="${C + 14}" text-anchor="middle">requests</text>${parts.map((p) => p.svg).join("")}</svg><ul class="pielegend">${legend}</ul></div>`
 }
 
-const fmt = (n) => n.toLocaleString("en-US")
+// one formatter for every number on the page: toLocaleString builds one per call
+const NUMBER = new Intl.NumberFormat("en-US")
+const fmt = (n) => NUMBER.format(n)
 
 // when the detail query is capped, humans are a lower bound, so bots (2xx - humans) are an upper bound
 const shareText = (share, capped) => (capped ? `≤${share}%` : `${share}%`)
@@ -971,6 +976,7 @@ export function render(model, { days, host, filters = {}, generated, config, cac
   const span = filters.day ? escapeHtml(filters.day) : `last ${days} day${days === 1 ? "" : "s"}`
   const people = [...c.services.values()].filter((s) => s.pageviews).length
   const map = worldMap(c.places, land, state)
+  const heat = heatmap(model.heat || [])
   const picked = filters.city ? `${filters.city}, ${filters.country}` : filters.country || ""
   const mapCard = map ? `<div class="card"><p class="cap">${sink ? "Sinkhole traffic" : filters.class && filters.class !== "human" ? escapeHtml(classLabel(filters.class)) : "Visitors"} by city${picked ? ` · ${escapeHtml(picked)} · <a href="${hrefFor(state, { country: null, city: null })}">whole world</a>` : ""}</p>${map}</div>` : ""
   const tiles = `<div class="tiles">
@@ -996,7 +1002,7 @@ ${model.partial ? `<p class="note">Breakdowns are partial: the detail query hit 
 ${sink ? sinkSection(model, state) : ""}
 ${model.length ? `${tiles}
 ${mapCard}
-${heatmap(model.heat || []) ? `<div class="card"><p class="cap">Requests by weekday and hour (UTC)</p>${heatmap(model.heat || [])}</div>` : ""}
+${heat ? `<div class="card"><p class="cap">Requests by weekday and hour (UTC)</p>${heat}</div>` : ""}
 ${combinedSection(c, window, config, model.partial, state)}` : `<p class="empty muted">No data in this window.</p>`}
 ${credit ? `<p class="muted foot">${credit}</p>` : ""}
 </body></html>`
