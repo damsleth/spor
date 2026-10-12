@@ -206,8 +206,8 @@ test("the map draws one linked circle per place, from rows with coordinates only
   ]
   const model = build({ totals: [{ host: "blog.example.com", status: "200", n: 14 }], geo }, config)
   const html = render(model, { days: 7, host: null, config, generated: "x", land: LAND })
-  assert.equal((html.match(/<circle /g) || []).length, 2, "the row without coordinates has no circle")
-  assert.match(html, /<a href="\?days=7&amp;country=NO"><circle cx="381\.5" cy="48\.2"/)
+  assert.equal((html.match(/<circle cx/g) || []).length, 2, "the row without coordinates has no circle")
+  assert.match(html, /<a href="\?days=7&amp;country=NO&amp;city=Oslo"><g class="pt"><circle class="hit" cx="381\.48" cy="48\.18"/, "a circle selects its city")
   assert.match(html, /Oslo, Oslo, NO: 4/)
   assert.doesNotMatch(render(model, { days: 7, host: null, config, generated: "x" }), /class="map"/, "no outline, no map")
   assert.deepEqual(toJSON(model, config).hosts[0].places[0], ["Oslo, Oslo, NO", 59.91, 10.74, 4])
@@ -257,9 +257,40 @@ test("map places keep their own name and country, and small circles are drawn la
   ]
   const model = build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }], geo }, config)
   const html = render(model, { days: 7, host: null, config, generated: "x", land: LAND })
-  assert.match(html, /country=AA"><circle[^>]*><title>First, AA: 4/)
-  assert.match(html, /country=BB"><circle[^>]*><title>Second, BB: 3/)
+  assert.match(html, /country=AA&amp;city=First"><g class="pt">[^]*?<title>First, AA: 4/)
+  assert.match(html, /country=BB&amp;city=Second"><g class="pt">[^]*?<title>Second, BB: 3/)
   assert.ok(html.indexOf("Big, NO") < html.indexOf("Small, CH"), "the smaller circle comes later, on top")
+})
+
+test("a selected place is orange, drawn last, zoomed to, and a click elsewhere drops it", async () => {
+  const { LAND } = await import("../src/world.js")
+  const places = [
+    { host: "blog.example.com", country: "NO", region: "Oslo", city: "Oslo", lat: "59.91", lon: "10.74", n: 4 },
+    { host: "blog.example.com", country: "NO", region: "Vestland", city: "Bergen", lat: "60.39", lon: "5.32", n: 2 },
+    { host: "blog.example.com", country: "US", region: "", city: "Ashburn", lat: "39.04", lon: "-77.49", n: 50 }
+  ]
+  const filters = { country: "NO", city: "Oslo" }
+  const model = build({ totals: [{ host: "blog.example.com", status: "200", n: 56 }], geo: [places[0]], places }, config)
+  const html = render(model, { days: 7, host: null, filters, config, generated: "x", land: LAND })
+  const map = html.slice(html.indexOf('<svg class="map"'), html.indexOf("</svg>", html.indexOf('<svg class="map"')))
+  assert.equal((map.match(/<circle cx/g) || []).length, 3, "every place stays on the map")
+  assert.equal((map.match(/class="sel"/g) || []).length, 1)
+  assert.ok(map.lastIndexOf("Ashburn") < map.lastIndexOf("Oslo, Oslo, NO"), "the selection is drawn last")
+  const [x, , w] = /viewBox="([^"]+)"/.exec(map)[1].split(" ").map(Number)
+  assert.ok(w < 720 && x > 300, "zoomed onto Norway")
+  assert.match(map, /<a href="\?days=7" aria-label="show the whole world"><rect class="sea"/, "a click on the map drops the selection")
+  assert.match(map, /<a href="\?days=7"><g class="pt">[^]*?Oslo, Oslo, NO: 4/, "a click on the selected city drops it")
+  assert.match(map, /href="\?days=7&amp;country=NO&amp;city=Bergen"/, "another city in view can be picked")
+  assert.match(html, /Oslo, NO · <a href="\?days=7">whole world<\/a>/)
+})
+
+test("the city filter takes real city names and nothing that could break SQL", () => {
+  const f = (q) => parseFilters(new URLSearchParams(q))
+  for (const city of ["Oslo", "São Paulo", "Oslo (Nordre Aker District)", "Saint-Étienne", "St. Louis", "Москва", "東京"]) assert.equal(f({ city }).city, city, city)
+  for (const city of ["O'Fallon", "a\\b", " Oslo", "x".repeat(65), "Oslo;DROP", "a\tb"]) assert.equal(f({ city }).city, undefined, city)
+  const q = queries(7, null, config, Date.now(), { country: "NO", city: "Oslo" })
+  assert.match(q.geo, /blob9 = 'Oslo'/)
+  assert.doesNotMatch(q.places, /blob9 = 'Oslo'|blob4 = 'NO'/, "the map's places skip the selection")
 })
 
 test("resolving many aliases for many selected services stays cheap", async () => {

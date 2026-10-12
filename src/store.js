@@ -120,6 +120,14 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
         values.push(v)
         return "?"
       })}`
+      // the map's places skip the country and city filters (their own bound values)
+      const { country, city, ...rest } = f
+      const placeValues = [w.fromSeconds, w.toSeconds]
+      const placeBind = (v) => {
+        placeValues.push(v)
+        return "?"
+      }
+      const wherePlaces = `FROM hits WHERE hour >= ? AND hour < ?${rest.view === "sink" ? "" : " AND source != 'sink'"}${hostSql(h, config, "host", placeBind)}${filterSql(rest, COLS, placeBind)}`
       const n = "SUM(n) AS n"
       const ok = "status >= '200' AND status < '300'"
       const people = f.class || f.view === "sink" ? "" : ` AND ${classSql("human", COLS)}`
@@ -133,6 +141,7 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
         paths: all(`SELECT host, path, status, ${n} ${where} GROUP BY host, path, status ORDER BY n DESC, host, path, status LIMIT 500`),
         origins: all(`SELECT host, origin, ${n} ${where} AND origin != '' GROUP BY host, origin ORDER BY n DESC, host, origin LIMIT 50`),
         geo: all(`SELECT host, country, region, city, lat, lon, ${n} ${where} AND ${ok} AND city != ''${people} GROUP BY host, country, region, city, lat, lon ORDER BY n DESC, host, country, region, city, lat, lon LIMIT ${LIMITS.geo}`),
+        places: db.prepare(`SELECT host, country, region, city, lat, lon, ${n} ${wherePlaces} AND ${ok} AND city != '' AND lat != ''${rest.class || rest.view === "sink" ? "" : ` AND ${human}`} GROUP BY host, country, region, city, lat, lon ORDER BY n DESC, host, country, region, city, lat, lon LIMIT ${LIMITS.geo}`).all(...placeValues),
         networks: all(`SELECT host, asn, asorg, ${n} ${where} AND asn != '' GROUP BY host, asn, asorg ORDER BY n DESC, host, asn, asorg LIMIT ${LIMITS.networks}`),
         agents: all(`SELECT host, ua, bot, asorg, ${n} ${where} AND NOT ${human} GROUP BY host, ua, bot, asorg ORDER BY n DESC, host, ua, bot, asorg LIMIT ${LIMITS.agents}`),
         visitors: all(`SELECT host, strftime('%Y-%m-%d', hour, 'unixepoch') AS day, count(DISTINCT visitor) AS v ${where} AND visitor != ''${people} GROUP BY host, day`),

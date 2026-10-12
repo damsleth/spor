@@ -232,7 +232,7 @@ export function windowStart(days, now = Date.now()) {
 // Drill-down filters from the query string. Analytics Engine SQL has no bound parameters, so every
 // value that reaches it matches a pattern without quotes, backslashes or whitespace; anything
 // else is dropped, never escaped. SQLite gets the same values as bound parameters.
-export const FILTER_KEYS = ["view", "day", "country", "asn", "class", "path", "ip"]
+export const FILTER_KEYS = ["view", "day", "country", "city", "asn", "class", "path", "ip"]
 
 function v4hex(ip) {
   const parts = ip.split(".")
@@ -285,6 +285,10 @@ export function parseFilters(params, now = Date.now()) {
     if (Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === day && t <= today && t > today - RETENTION_DAYS * 86400000) out.day = day
   }
   if (/^[A-Z0-9]{2}$/.test(get("country"))) out.country = get("country")
+  // a city name as Cloudflare or DB-IP writes it: letters in any script, digits, spaces and .,()-
+  // (no quotes or backslashes, so it is safe as an AE literal; a city with an apostrophe can't be
+  // picked). It names a place together with its country.
+  if (/^[\p{L}\p{M}\p{N} .,()-]{1,64}$/u.test(get("city")) && get("city").trim() === get("city")) out.city = get("city")
   if (/^\d{1,10}$/.test(get("asn"))) out.asn = get("asn")
   if (CLASS_IDS.includes(get("class"))) out.class = get("class")
   // the sinkhole view: only bait, canary uses and /_internal/ challenges
@@ -313,7 +317,7 @@ export function span(days, filters = {}, now = Date.now()) {
 // literal for AE, a ? placeholder for SQLite)
 export function filterSql(filters, col, lit) {
   const parts = []
-  for (const k of ["country", "asn", "path", "ip"]) if (filters[k]) parts.push(`${col[k]} = ${lit(filters[k])}`)
+  for (const k of ["country", "city", "asn", "path", "ip"]) if (filters[k]) parts.push(`${col[k]} = ${lit(filters[k])}`)
   if (filters.class) parts.push(classSql(filters.class, col))
   if (filters.view === "sink") parts.push(`${col.sink} != ''`)
   return parts.map((p) => ` AND ${p}`).join("")
@@ -329,7 +333,11 @@ export function queries(days, host, config, now = Date.now(), filters = {}) {
   const f = parseFilters(new URLSearchParams(Object.entries(filters).filter(([, v]) => typeof v === "string")), now)
   const w = span(d, f, now)
   const c = AE_COLUMNS
-  const from = `FROM ${config.dataset} WHERE timestamp >= toDateTime('${w.from}') AND timestamp < toDateTime('${w.to}')` + hostSql(h, config, "index1", (v) => `'${v}'`) + filterSql(f, c, (v) => `'${v}'`)
+  const base = `FROM ${config.dataset} WHERE timestamp >= toDateTime('${w.from}') AND timestamp < toDateTime('${w.to}')` + hostSql(h, config, "index1", (v) => `'${v}'`)
+  const from = base + filterSql(f, c, (v) => `'${v}'`)
+  // the map shows every place, the selected country or city highlighted: its own filters skip those
+  const { country, city, ...rest } = f
+  const fromPlaces = base + filterSql(rest, c, (v) => `'${v}'`)
   const n = "SUM(_sample_interval) AS n"
   const ok = "blob5 >= '200' AND blob5 < '300'"
   // tables of people (cities, visitors) follow a class filter when there is one, and show everyone
@@ -343,6 +351,7 @@ export function queries(days, host, config, now = Date.now(), filters = {}) {
     paths: `SELECT index1 AS host, blob1 AS path, blob5 AS status, ${n} ${from} GROUP BY host, path, status ORDER BY n DESC, host, path, status LIMIT 500 FORMAT JSON`,
     origins: `SELECT index1 AS host, blob7 AS origin, ${n} ${from} AND blob7 != '' GROUP BY host, origin ORDER BY n DESC, host, origin LIMIT 50 FORMAT JSON`,
     geo: `SELECT index1 AS host, blob4 AS country, blob10 AS region, blob9 AS city, blob15 AS lat, blob16 AS lon, ${n} ${from} AND ${ok} AND blob9 != ''${people} GROUP BY host, country, region, city, lat, lon ORDER BY n DESC, host, country, region, city, lat, lon LIMIT ${LIMITS.geo} FORMAT JSON`,
+    places: `SELECT index1 AS host, blob4 AS country, blob10 AS region, blob9 AS city, blob15 AS lat, blob16 AS lon, ${n} ${fromPlaces} AND ${ok} AND blob9 != '' AND blob15 != ''${rest.class || rest.view === "sink" ? "" : ` AND ${classSql("human", c)}`} GROUP BY host, country, region, city, lat, lon ORDER BY n DESC, host, country, region, city, lat, lon LIMIT ${LIMITS.geo} FORMAT JSON`,
     networks: `SELECT index1 AS host, blob11 AS asn, blob12 AS asorg, ${n} ${from} AND blob11 != '' GROUP BY host, asn, asorg ORDER BY n DESC, host, asn, asorg LIMIT ${LIMITS.networks} FORMAT JSON`,
     agents: `SELECT index1 AS host, blob3 AS ua, blob6 AS bot, blob12 AS asorg, ${n} ${from} AND NOT ${human} GROUP BY host, ua, bot, asorg ORDER BY n DESC, host, ua, bot, asorg LIMIT ${LIMITS.agents} FORMAT JSON`,
     visitors: `SELECT index1 AS host, toStartOfInterval(timestamp, INTERVAL '1' DAY) AS day, count(DISTINCT blob13) AS v ${from} AND blob13 != ''${people} GROUP BY host, day FORMAT JSON`,
@@ -402,7 +411,7 @@ export function agentName(row, id = classOf(row)) {
 
 // filtered: a class filter is on, so every detail row already belongs to the class asked for and
 // the page tables show its fetches, not only people's
-export function build({ totals = [], daily = [], ok = [], paths = [], origins = [], geo = [], networks = [], agents = [], visitors = [], ips = [], heat = [], hosts: seen = [], sinkkinds = [], sinkuse = [] }, config, { hourly = false, filtered = false } = {}) {
+export function build({ totals = [], daily = [], ok = [], paths = [], origins = [], geo = [], places = null, networks = [], agents = [], visitors = [], ips = [], heat = [], hosts: seen = [], sinkkinds = [], sinkuse = [] }, config, { hourly = false, filtered = false } = {}) {
   const classify = classifier()
   const hosts = new Map()
   const get = (raw) => {
@@ -454,17 +463,18 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
     if (proxy && TARGET.test(r.path) && !PROBE.test(r.path) && !isAsset(r.path)) add(h.targets, r.path, n)
   }
   for (const r of origins) add(get(r.host).origins, r.origin, num(r.n))
-  for (const r of geo) {
+  for (const r of geo) add(get(r.host).cities, [r.city, r.region, r.country].filter(Boolean).join(", "), num(r.n))
+  // the map: every place in view (the places query skips the country and city filters, so the
+  // selection is highlighted, not alone); a result set without it falls back to the cities rows
+  for (const r of places || geo) {
     const h = get(r.host)
-    const label = [r.city, r.region, r.country].filter(Boolean).join(", ")
-    add(h.cities, label, num(r.n))
     const lat = Number(r.lat)
     const lon = Number(r.lon)
     // rows from before coordinates have none ("" reads as 0, so both must be set)
     if (r.lat === "" || r.lon === "" || r.lat === undefined || !Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) continue
     // the place, not just the point: two cities can round to the same coordinates
     const key = `${lat.toFixed(2)},${lon.toFixed(2)}|${r.country || ""}|${r.city || ""}`
-    const p = h.places.get(key) || { lat, lon, n: 0, label, country: r.country || "" }
+    const p = h.places.get(key) || { lat, lon, n: 0, label: [r.city, r.region, r.country].filter(Boolean).join(", "), country: r.country || "", city: r.city || "" }
     p.n += num(r.n)
     h.places.set(key, p)
   }
@@ -588,13 +598,15 @@ function windowDays(days, today) {
 // its label at once (a hidden group that CSS :hover reveals); a <title> carries the same text for
 // screen readers and touch.
 
-// A hover label at (x, y), kept inside a w x h chart; size is the font size in chart units
-function tipBox(x, y, text, w, h, size = 11) {
-  const tw = Math.round(text.length * size * 0.58 + size)
-  const th = Math.round(size * 1.8)
-  const bx = Math.round(Math.min(Math.max(1, x + size * 0.8), w - tw - 1))
-  const by = Math.round(Math.min(Math.max(1, y - th - size * 0.6), h - th - 1))
-  return `<g class="tip"><rect x="${bx}" y="${by}" width="${tw}" height="${th}" rx="${Math.round(size * 0.4)}"/><text x="${bx + Math.round(size * 0.5)}" y="${by + Math.round(size * 1.25)}" font-size="${size}">${escapeHtml(text)}</text></g>`
+// A hover label at (x, y), kept inside the chart's box (ox, oy, w, h); size is the font size in
+// chart units
+function tipBox(x, y, text, w, h, size = 11, ox = 0, oy = 0) {
+  const r = (v) => +v.toFixed(2)
+  const tw = text.length * size * 0.58 + size
+  const th = size * 1.8
+  const bx = Math.min(Math.max(ox + size * 0.1, x + size * 0.8), ox + w - tw - size * 0.1)
+  const by = Math.min(Math.max(oy + size * 0.1, y - th - size * 0.6), oy + h - th - size * 0.1)
+  return `<g class="tip"><rect x="${r(bx)}" y="${r(by)}" width="${r(tw)}" height="${r(th)}" rx="${r(size * 0.4)}"/><text x="${r(bx + size * 0.5)}" y="${r(by + size * 1.25)}" font-size="${r(size)}">${escapeHtml(text)}</text></g>`
 }
 
 // 1, 2, 2.5 or 5 times a power of ten, at least v: the top of a chart's scale
@@ -649,23 +661,51 @@ function lineChart(series, window, noun, dayLink = null) {
 const chartRow = (name, total, svg) => (svg ? `<div class="chart"><div><p class="cap">${escapeHtml(name)}</p><p class="big">${fmt(total)}</p></div>${svg}</div>` : "")
 
 // Visitors by city on a world map: land is the outline from src/world.js (passed in, so this file
-// stays import-free), one circle per place, its area proportional to its count, linking to that
-// country's filter. Same projection as the outline: x = (lon + 180) * 2, y = (84 - lat) * 2.
+// stays import-free), one circle per place, its area proportional to its count. Same projection as
+// the outline: x = (lon + 180) * 2, y = (84 - lat) * 2. A circle selects its city (state.country
+// and state.city), and the selection turns orange, is drawn on top, and the map zooms to it; with
+// a selection, a click anywhere else on the map drops it. No script: every click is a link.
 const MAP_PLACES = 300
+const mapX = (p) => (p.lon + 180) * 2
+const mapY = (p) => (84 - Math.max(-60, Math.min(84, p.lat))) * 2
 function worldMap(places, land, state) {
   if (!land || !places.size) return ""
   const list = [...places.values()].sort((a, b) => b.n - a.n).slice(0, MAP_PLACES)
   const max = list[0].n
-  // biggest first, so the small circles are drawn on top and stay clickable
-  const circles = list.map((p) => {
-    const x = ((p.lon + 180) * 2).toFixed(1)
-    const y = ((84 - Math.max(-60, Math.min(84, p.lat))) * 2).toFixed(1)
-    const r = (1.6 + 7 * Math.sqrt(p.n / max)).toFixed(1)
-    const dot = `<circle cx="${x}" cy="${y}" r="${r}"><title>${escapeHtml(p.label)}: ${p.n}</title></circle>`
-    const href = filterLink(state, "country", p.country)
-    return href ? `<a href="${href}">${dot}</a>` : dot
+  const picked = (p) => Boolean(state.country) && p.country === state.country && (!state.city || p.city === state.city)
+  const sel = list.filter(picked)
+  // the view: the selection's bounds, padded, at least 18 degrees wide, at the map's 2.5:1
+  let vb = [0, 0, 720, 288]
+  if (sel.length) {
+    const xs = sel.map(mapX)
+    const ys = sel.map(mapY)
+    let w = Math.max(Math.max(...xs) - Math.min(...xs) + 24, 36)
+    let h = Math.max(Math.max(...ys) - Math.min(...ys) + 24, 14.4)
+    if (w / h > 2.5) h = w / 2.5
+    else w = h * 2.5
+    w = Math.min(w, 720)
+    h = Math.min(h, 288)
+    const cx = (Math.max(...xs) + Math.min(...xs)) / 2
+    const cy = (Math.max(...ys) + Math.min(...ys)) / 2
+    vb = [Math.min(Math.max(0, cx - w / 2), 720 - w), Math.min(Math.max(0, cy - h / 2), 288 - h), w, h]
+  }
+  // circles and labels keep their size on screen at any zoom
+  const k = vb[2] / 720
+  const r = (p) => (1.6 + 7 * Math.sqrt(p.n / max)) * k
+  const f = (v) => +v.toFixed(2)
+  // biggest first so small circles stay on top, and the selection over everything
+  const order = [...list.filter((p) => !picked(p)), ...sel]
+  const dots = order.map((p) => `<circle cx="${f(mapX(p))}" cy="${f(mapY(p))}" r="${f(r(p))}"${picked(p) ? ` class="sel"` : ""}/>`).join("")
+  const hits = order.map((p) => {
+    const text = `${p.label}: ${fmt(p.n)}`
+    // a click selects the city; on the selected city it drops the selection
+    const valid = parseFilters(new URLSearchParams({ country: p.country, city: p.city }))
+    const next = picked(p) && state.city ? { country: null, city: null } : { country: valid.country || null, city: valid.country ? valid.city || null : null }
+    const g = `<g class="pt"><circle class="hit" cx="${f(mapX(p))}" cy="${f(mapY(p))}" r="${f(Math.max(r(p), 3 * k))}"/>${tipBox(mapX(p), mapY(p), text, vb[2], vb[3], 9 * k, vb[0], vb[1])}<title>${escapeHtml(text)}</title></g>`
+    return next.country || picked(p) ? `<a href="${hrefFor(state, next)}">${g}</a>` : g
   }).join("")
-  return `<svg class="map" viewBox="0 0 720 288" role="img" aria-label="visitors by city, ${list.length} places"><path d="${land}"/>${circles}</svg>`
+  const sea = sel.length ? `<a href="${hrefFor(state, { country: null, city: null })}" aria-label="show the whole world"><rect class="sea" x="${f(vb[0])}" y="${f(vb[1])}" width="${f(vb[2])}" height="${f(vb[3])}"/></a>` : ""
+  return `<svg class="map" viewBox="${vb.map(f).join(" ")}" role="img" aria-label="visitors by city, ${list.length} places${sel.length ? `, ${sel.length} selected` : ""}">${sea}<path class="land" d="${land}"/>${dots}${hits}</svg>`
 }
 
 // Requests by weekday and UTC hour: one cell per hour, its opacity proportional to the busiest.
@@ -798,8 +838,8 @@ ${c.multi ? table("services", services, { label: (k) => config.services[k] ? `${
 </section>`
 }
 
-const CSS = `:root{color-scheme:light dark;--bg:#f6f7f9;--card:#fff;--fg:#14171f;--muted:#5d6572;--line:#e6e8ec;--soft:#f0f2f5;--accent:#2f62d9;--accent-soft:rgba(47,98,217,.12);--c2:#2a8f5b;--c3:#2f62d9;--c4:#c27a10;--c5:#cc3b3b;--co:#8a919d}
-@media (prefers-color-scheme:dark){:root{--bg:#0d0f14;--card:#161a22;--fg:#e9ecf2;--muted:#9aa3b2;--line:#262b36;--soft:#1d222c;--accent:#7aa2ff;--accent-soft:rgba(122,162,255,.16);--c2:#4fc08a;--c3:#7aa2ff;--c4:#e0a43c;--c5:#f0716f;--co:#8a919d}}
+const CSS = `:root{color-scheme:light dark;--bg:#f6f7f9;--card:#fff;--fg:#14171f;--muted:#5d6572;--line:#e6e8ec;--soft:#f0f2f5;--accent:#2f62d9;--accent-soft:rgba(47,98,217,.12);--c2:#2a8f5b;--c3:#2f62d9;--c4:#c27a10;--c5:#cc3b3b;--co:#8a919d;--sel:#e8710a}
+@media (prefers-color-scheme:dark){:root{--bg:#0d0f14;--card:#161a22;--fg:#e9ecf2;--muted:#9aa3b2;--line:#262b36;--soft:#1d222c;--accent:#7aa2ff;--accent-soft:rgba(122,162,255,.16);--c2:#4fc08a;--c3:#7aa2ff;--c4:#e0a43c;--c5:#f0716f;--co:#8a919d;--sel:#f5a04a}}
 *{box-sizing:border-box}
 body{margin:0 auto;max-width:1120px;padding:24px 16px 48px;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
 a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
@@ -868,8 +908,10 @@ td.n{width:56px;text-align:right;font-variant-numeric:tabular-nums;padding-left:
 .pielegend .c2{background:var(--c2)}.pielegend .c3{background:var(--c3)}.pielegend .c4{background:var(--c4)}.pielegend .c5{background:var(--c5)}.pielegend .co{background:var(--co)}
 @media (max-width:520px){.chart{grid-template-columns:1fr}}
 .alerts{margin-bottom:16px;table-layout:auto}.alerts th{text-align:left;font-size:12px;color:var(--muted);font-weight:600;padding:2px 8px 4px 0}.alerts td{padding:3px 8px 3px 0;vertical-align:top;overflow-wrap:anywhere}
-.map{display:block;width:100%;height:auto}.map path{fill:var(--soft);stroke:var(--line);stroke-width:.6}
-.map circle{fill:var(--accent);fill-opacity:.45;stroke:var(--accent);stroke-width:.6}.map a:hover circle{fill-opacity:.8}
+.map{display:block;width:100%;height:auto}.map .land{fill:var(--soft);stroke:var(--line);stroke-width:.6;pointer-events:none}
+.map circle{fill:var(--accent);fill-opacity:.45;stroke:var(--accent);stroke-width:1}.map circle.sel{fill:var(--sel);fill-opacity:.8;stroke:var(--sel)}
+.map .land,.map circle{vector-effect:non-scaling-stroke}.map .hit{fill:transparent;stroke:none}.map .sea{fill:transparent;cursor:zoom-out}
+.map .tip rect{vector-effect:non-scaling-stroke}.map .pt:hover .hit{fill:var(--fg);fill-opacity:.12}
 @media (max-width:520px){body{padding:16px 12px 32px}.tile .v{font-size:24px}.card{padding:12px}}`
 
 // The sinkhole card: every canary use with the probe its key came from, and bait served by kind
@@ -928,6 +970,9 @@ export function render(model, { days, host, filters = {}, generated, config, cac
   const share = c.ok2xx ? Math.round((c.bots / c.ok2xx) * 100) : 0
   const span = filters.day ? escapeHtml(filters.day) : `last ${days} day${days === 1 ? "" : "s"}`
   const people = [...c.services.values()].filter((s) => s.pageviews).length
+  const map = worldMap(c.places, land, state)
+  const picked = filters.city ? `${filters.city}, ${filters.country}` : filters.country || ""
+  const mapCard = map ? `<div class="card"><p class="cap">${sink ? "Sinkhole traffic" : filters.class && filters.class !== "human" ? escapeHtml(classLabel(filters.class)) : "Visitors"} by city${picked ? ` · ${escapeHtml(picked)} · <a href="${hrefFor(state, { country: null, city: null })}">whole world</a>` : ""}</p>${map}</div>` : ""
   const tiles = `<div class="tiles">
 <div class="tile"><div class="l">Requests</div><div class="v">${fmt(c.requests)}</div><div class="s">${span}</div></div>
 ${filters.class && filters.class !== "human"
@@ -950,7 +995,7 @@ ${CSS}
 ${model.partial ? `<p class="note">Breakdowns are partial: the detail query hit its ${OK_LIMIT}-group cap, so human counts are a lower bound.</p>` : ""}
 ${sink ? sinkSection(model, state) : ""}
 ${model.length ? `${tiles}
-${worldMap(c.places, land, state) ? `<div class="card"><p class="cap">${sink ? "Sinkhole traffic" : filters.class && filters.class !== "human" ? escapeHtml(classLabel(filters.class)) : "Visitors"} by city</p>${worldMap(c.places, land, state)}</div>` : ""}
+${mapCard}
 ${heatmap(model.heat || []) ? `<div class="card"><p class="cap">Requests by weekday and hour (UTC)</p>${heatmap(model.heat || [])}</div>` : ""}
 ${combinedSection(c, window, config, model.partial, state)}` : `<p class="empty muted">No data in this window.</p>`}
 ${credit ? `<p class="muted foot">${credit}</p>` : ""}
