@@ -273,7 +273,14 @@ test("resolving many aliases for many selected services stays cheap", async () =
   const cfg = loadConfig({ services, aliases })
   const totals = Object.keys(aliases).concat(Object.keys(services)).map((host) => ({ host, status: "200", n: 1 }))
   const host = Object.keys(services).join(",")
-  const t = performance.now()
-  for (let k = 0; k < 5; k++) render(build({ totals }, cfg), { days: 7, host, config: cfg, generated: "x" })
-  assert.ok((performance.now() - t) / 5 < 8, "under 8 ms per page here")
+  // a ratio, not a wall-clock limit, so a slow CI runner can't fail it: with the selection the page
+  // may cost a few times what it costs without one (before the fix it cost about 35 times as much)
+  const time = (h) => {
+    for (let k = 0; k < 3; k++) render(build({ totals }, cfg), { days: 7, host: h, config: cfg, generated: "x" })
+    const t = performance.now()
+    for (let k = 0; k < 10; k++) render(build({ totals }, cfg), { days: 7, host: h, config: cfg, generated: "x" })
+    return performance.now() - t
+  }
+  const ratio = time(host) / time(null)
+  assert.ok(ratio < 5, `selection costs ${ratio.toFixed(1)}x`)
 })
