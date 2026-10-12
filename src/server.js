@@ -37,7 +37,7 @@ function originOf(value) {
 // every value is attacker-written: strings only, capped like the tap caps them
 // Control characters are dropped: SQLite's LIKE stops at a NUL, so the classes would disagree.
 const COORD = /^-?\d{1,3}(\.\d{1,6})?$/
-function clean({ host, path, referer, ua, country, status, bot, origin, method, city, region, asn, asorg, visitor, ip, lat, lon }) {
+function clean({ host, path, referer, ua, country, status, bot, origin, method, city, region, asn, asorg, visitor, ip, lat, lon, sink, sinkctx }) {
   // eslint-disable-next-line no-control-regex
   const s = (v, max) => (typeof v === "string" ? v : v === undefined || v === null ? "" : String(v)).replace(/[\x00-\x1f\x7f]/g, "").slice(0, max)
   return {
@@ -46,15 +46,17 @@ function clean({ host, path, referer, ua, country, status, bot, origin, method, 
     city: s(city, 64), region: s(region, 64), asn: /^\d{1,10}$/.test(s(asn, 10)) ? s(asn, 10) : "", asorg: s(asorg, 64),
     visitor: /^[0-9a-f]{16}$/.test(s(visitor, 16)) ? s(visitor, 16) : "", ip: s(ip, 45).toLowerCase(),
     // coordinates as the tap writes them: text with 2 decimals
-    lat: COORD.test(s(lat, 12)) ? Number(lat).toFixed(2) : "", lon: COORD.test(s(lon, 12)) ? Number(lon).toFixed(2) : ""
+    lat: COORD.test(s(lat, 12)) ? Number(lat).toFixed(2) : "", lon: COORD.test(s(lon, 12)) ? Number(lon).toFixed(2) : "",
+    // the tap's sinkhole marks: "bait:<kind>", "use:<kind>" or "challenge", and the probe a key came from
+    sink: /^((bait|use):[a-z]+|challenge)$/.test(s(sink, 24)) ? s(sink, 24) : "", sinkctx: s(sinkctx, 200)
   }
 }
 
 // the tap's Analytics Engine data point -> store fields
 export function fromDataPoint(point) {
   if (!point || !Array.isArray(point.indexes) || !Array.isArray(point.blobs)) return null
-  const [path, referer, ua, country, status, bot, origin, method, city, region, asn, asorg, visitor, ip, lat, lon] = point.blobs
-  return clean({ host: point.indexes[0], path, referer, ua, country, status, bot, origin, method, city, region, asn, asorg, visitor, ip, lat, lon })
+  const [path, referer, ua, country, status, bot, origin, method, city, region, asn, asorg, visitor, ip, lat, lon, sink, sinkctx] = point.blobs
+  return clean({ host: point.indexes[0], path, referer, ua, country, status, bot, origin, method, city, region, asn, asorg, visitor, ip, lat, lon, sink, sinkctx })
 }
 
 // A local point (nginx), finished like the tap finishes one: the network, and any country, region or

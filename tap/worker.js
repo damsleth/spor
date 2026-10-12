@@ -1,9 +1,15 @@
+import { baitKind, sinkable } from "../src/report.js"
+import { findToken, readToken, makeToken, bait, internalResponse, INTERNAL } from "./sink.js"
+
 // spor tap for hosts that are not Workers: a home server, a VPS behind nginx, Pages, another
 // cloud, anything behind the Cloudflare proxy. This Worker sits on their routes, passes every
 // request to the origin untouched (WebSockets and streaming included), and writes one Analytics
 // Engine data point with the schema every spor site shares:
 // indexes [host], blobs [path, refererOrigin, userAgent, country, status, botCategory, origin, method,
-// city, region, asn, asOrganization, visitor, ip, latitude, longitude], doubles [1]. Coordinates are
+// city, region, asn, asOrganization, visitor, ip, latitude, longitude, sink, sinkContext], doubles [1].
+// sink is "bait:<kind>" for a probe that got bait, "use:<kind>" for a request with a canary token,
+// "challenge" for /_internal/ without one; sinkContext is the probe a used token came from.
+// Coordinates are
 // Cloudflare's for the city, rounded to 2 decimals (about 1 km). No query string. A failed write
 // never affects the response.
 // A route runs in front of a Worker's custom domain too, so wildcard routes count Worker sites as
@@ -25,7 +31,7 @@ function originOf(value) {
 // a coordinate as text with 2 decimals, or "" when Cloudflare has none
 const coord = (v) => (v === undefined || v === null || v === "" || !Number.isFinite(Number(v)) ? "" : Number(v).toFixed(2))
 
-export function dataPoint(request, status, { visitor = "", ip = "" } = {}) {
+export function dataPoint(request, status, { visitor = "", ip = "", sink = "", sinkctx = "" } = {}) {
   const url = new URL(request.url)
   const cf = request.cf || {}
   return {
@@ -47,7 +53,9 @@ export function dataPoint(request, status, { visitor = "", ip = "" } = {}) {
       visitor,
       ip.slice(0, 45),
       coord(cf.latitude),
-      coord(cf.longitude)
+      coord(cf.longitude),
+      sink,
+      sinkctx.slice(0, 200)
     ],
     doubles: [1]
   }
@@ -91,24 +99,98 @@ export async function visitorId(request, env, ip, now = Date.now()) {
   return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("")
 }
 
-export async function record(request, status, env) {
+// sink: { kind, ctx } for a sinkhole event, which is recorded even for a SELF_COUNTED host: its own
+// tap never sees the bait
+export async function record(request, status, env, sink = null) {
   try {
     const host = new URL(request.url).hostname.replace(/\.$/, "")
-    if (env.SELF_COUNTED?.includes(host) || !env.SPOR_ANALYTICS) return
+    if (!env.SPOR_ANALYTICS || (!sink && env.SELF_COUNTED?.includes(host))) return
     const ip = request.headers.get("cf-connecting-ip") || ""
     const visitor = await visitorId(request, env, ip)
-    env.SPOR_ANALYTICS.writeDataPoint(dataPoint(request, status, { visitor, ip: env.RECORD_IP === true ? ip : "" }))
+    env.SPOR_ANALYTICS.writeDataPoint(dataPoint(request, status, { visitor, ip: env.RECORD_IP === true ? ip : "", sink: sink?.kind, sinkctx: sink?.ctx }))
   } catch {
     // analytics must never break the site
   }
 }
 
+// A canary token in use: record it with the probe it came from, and announce it once an hour per
+// token (CANARY_WEBHOOK, an ntfy topic URL say, with CANARY_WEBHOOK_TOKEN as its Bearer token)
+const announced = new Map()
+async function canaryUsed(request, env, token, status) {
+  const found = await readToken(env.CANARY_SECRET, token)
+  const ctx = found ? `${found.host}|${found.ip}|${found.at}|${found.kind}` : "unknown"
+  await record(request, status, env, { kind: `use:${found?.kind || "unknown"}`, ctx })
+  const now = Date.now()
+  if (!env.CANARY_WEBHOOK || now - (announced.get(token) || 0) < 3600000) return
+  announced.set(token, now)
+  if (announced.size > 1000) announced.clear()
+  const url = new URL(request.url)
+  const cf = request.cf || {}
+  const who = [request.headers.get("cf-connecting-ip"), cf.asOrganization, cf.country].filter(Boolean).join(", ")
+  const from = found ? `the ${found.kind} bait on ${found.host}, given to ${found.ip} at ${found.at} UTC` : "an unknown bait"
+  await fetch(env.CANARY_WEBHOOK, {
+    method: "POST",
+    headers: { title: "spor canary used", tags: "rotating_light", ...(env.CANARY_WEBHOOK_TOKEN ? { authorization: `Bearer ${env.CANARY_WEBHOOK_TOKEN}` } : {}) },
+    body: `A key from ${from} was used by ${who || "an unknown client"} on ${url.hostname}${url.pathname.slice(0, 64)}`
+  })
+}
+
+// Bait instead of the origin's answer, when the path is a probe, the origin has nothing there (a
+// 403, 404 or 410, or an HTML fallback page for a file that isn't HTML) and the client isn't exempt
+async function baitResponse(request, env, path, response) {
+  const kind = baitKind(path)
+  if (!kind) return null
+  const html = (response.headers.get("content-type") || "").includes("text/html")
+  const empty = [403, 404, 410].includes(response.status) || (response.status === 200 && html && kind !== "userfiles")
+  if (!empty || !sinkable({ ua: request.headers.get("user-agent") || "", bot: String(request.cf?.verifiedBotCategory || "") })) return null
+  const host = new URL(request.url).hostname.replace(/\.$/, "")
+  const token = await makeToken(env.CANARY_SECRET, { host, ip: request.headers.get("cf-connecting-ip") || "", kind })
+  const b = bait(kind, host, token)
+  if (!b) return null
+  response.body?.cancel()
+  return {
+    response: new Response(b.body, { status: 200, headers: { "content-type": b.type, "cache-control": "no-store" } }),
+    record: record(request, 200, env, { kind: `bait:${kind}`, ctx: "" })
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
+    // after the response: hashing, KV and the webhook stay off the request's path
+    const later = (p) => (ctx?.waitUntil ? ctx.waitUntil(p) : p)
+    // the sinkhole is off unless vars.SINKHOLE is true; any failure in it falls back to the origin
+    const sinkhole = env.SINKHOLE === true
+    let path = "/"
+    try {
+      path = new URL(request.url).pathname
+    } catch {
+      // keep "/"
+    }
+    if (sinkhole) {
+      try {
+        const token = findToken(request)
+        if (token || path.startsWith(INTERNAL)) {
+          const answer = internalResponse(Boolean(token))
+          await later(token ? canaryUsed(request, env, token, answer.status).catch(() => {}) : record(request, answer.status, env, { kind: "challenge", ctx: "" }))
+          return answer
+        }
+      } catch {
+        // fall through to the origin
+      }
+    }
     const response = await fetch(request)
-    // after the response: hashing and KV stay off the request's path
-    if (ctx?.waitUntil) ctx.waitUntil(record(request, response.status, env))
-    else await record(request, response.status, env)
+    if (sinkhole) {
+      try {
+        const swapped = await baitResponse(request, env, path, response)
+        if (swapped) {
+          await later(swapped.record)
+          return swapped.response
+        }
+      } catch {
+        // the origin's answer stands
+      }
+    }
+    await later(record(request, response.status, env))
     return response
   }
 }

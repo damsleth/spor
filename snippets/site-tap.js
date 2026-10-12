@@ -18,7 +18,7 @@ function originOf(value) {
 // a coordinate as text with 2 decimals, or "" when Cloudflare has none
 const coord = (v) => (v === undefined || v === null || v === "" || !Number.isFinite(Number(v)) ? "" : Number(v).toFixed(2))
 
-function dataPoint(request, status, { visitor = "", ip = "" } = {}) {
+function dataPoint(request, status, { visitor = "", ip = "", sink = "", sinkctx = "" } = {}) {
   const url = new URL(request.url)
   const cf = request.cf || {}
   return {
@@ -40,7 +40,9 @@ function dataPoint(request, status, { visitor = "", ip = "" } = {}) {
       visitor,
       ip.slice(0, 45),
       coord(cf.latitude),
-      coord(cf.longitude)
+      coord(cf.longitude),
+      sink,
+      sinkctx.slice(0, 200)
     ],
     doubles: [1]
   }
@@ -84,12 +86,13 @@ async function visitorId(request, env, ip, now = Date.now()) {
   return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("")
 }
 
-async function record(request, status, env) {
+async function record(request, status, env, sink = null) {
   try {
+    const host = new URL(request.url).hostname.replace(/\.$/, "")
     if (!env.SPOR_ANALYTICS) return
     const ip = request.headers.get("cf-connecting-ip") || ""
     const visitor = await visitorId(request, env, ip)
-    env.SPOR_ANALYTICS.writeDataPoint(dataPoint(request, status, { visitor, ip: env.RECORD_IP === true ? ip : "" }))
+    env.SPOR_ANALYTICS.writeDataPoint(dataPoint(request, status, { visitor, ip: env.RECORD_IP === true ? ip : "", sink: sink?.kind, sinkctx: sink?.ctx }))
   } catch {
     // analytics must never break the site
   }

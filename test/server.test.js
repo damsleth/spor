@@ -27,14 +27,14 @@ test("nginx syslog lines become store points: path without query, referer and or
   const line = `<190>Oct  6 10:35:35 spor: {"msec":"1791283000.123","host":"app.example.net","uri":"/a/b?token=secret","status":"200","referer":"https://news.example/item?id=1","ua":"${chrome}","country":"-","origin":"-","method":"GET"}`
   const e = fromNginx(line)
   assert.equal(e.seconds, 1791283000.123)
-  assert.deepEqual(e.point, { host: "app.example.net", path: "/a/b", referer: "https://news.example", ua: chrome, country: "", status: "200", bot: "", origin: "", method: "GET", city: "", region: "", asn: "", asorg: "", visitor: "", ip: "", lat: "", lon: "" })
+  assert.deepEqual(e.point, { host: "app.example.net", path: "/a/b", referer: "https://news.example", ua: chrome, country: "", status: "200", bot: "", origin: "", method: "GET", city: "", region: "", asn: "", asorg: "", visitor: "", ip: "", lat: "", lon: "", sink: "", sinkctx: "" })
   for (const bad of ["<190>no json here", "<190>spor: {broken", "<190>spor: null"]) assert.equal(fromNginx(bad), null, bad)
   assert.equal(fromNginx(`{"host":"a","uri":"/${"x".repeat(200)}"}`).point.path.length, 64)
 })
 
 test("the tap's own data point is a valid ingest body", () => {
   const request = new Request("https://app.example.net/page?q=1", { headers: { referer: "https://r.example/x", "user-agent": chrome } })
-  assert.deepEqual(fromDataPoint(dataPoint(request, 200)), { host: "app.example.net", path: "/page", referer: "https://r.example", ua: chrome, country: "", status: "200", bot: "", origin: "", method: "GET", city: "", region: "", asn: "", asorg: "", visitor: "", ip: "", lat: "", lon: "" })
+  assert.deepEqual(fromDataPoint(dataPoint(request, 200)), { host: "app.example.net", path: "/page", referer: "https://r.example", ua: chrome, country: "", status: "200", bot: "", origin: "", method: "GET", city: "", region: "", asn: "", asorg: "", visitor: "", ip: "", lat: "", lon: "", sink: "", sinkctx: "" })
   for (const bad of [null, {}, { indexes: "x", blobs: [] }]) assert.equal(fromDataPoint(bad), null)
 })
 

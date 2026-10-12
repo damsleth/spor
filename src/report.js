@@ -60,7 +60,7 @@ export const MAX_DAYS = 31
 export const OK_LIMIT = 2000
 const TOP = 10
 
-export const LIMITS = { geo: 500, networks: 500, agents: 1000, ips: 200 }
+export const LIMITS = { geo: 500, networks: 500, agents: 1000, ips: 200, canaries: 200 }
 // Analytics Engine keeps 92 days; a day filter may reach that far back
 export const RETENTION_DAYS = 92
 
@@ -145,8 +145,34 @@ export function classSql(id, col) {
   return `(${matchSql(CLASSES[i], col)}${not ? ` AND ${not}` : ""})`
 }
 
-export const AE_COLUMNS = { host: "index1", path: "blob1", referer: "blob2", ua: "blob3", country: "blob4", status: "blob5", bot: "blob6", origin: "blob7", method: "blob8", city: "blob9", region: "blob10", asn: "blob11", asorg: "blob12", visitor: "blob13", ip: "blob14", lat: "blob15", lon: "blob16" }
-const PROBE = /wp-|\.php|\.env|\/\.git|xmlrpc|\/admin|\/cgi-bin|\/vendor\/|\/\.well-known\/security/i
+export const AE_COLUMNS = { host: "index1", path: "blob1", referer: "blob2", ua: "blob3", country: "blob4", status: "blob5", bot: "blob6", origin: "blob7", method: "blob8", city: "blob9", region: "blob10", asn: "blob11", asorg: "blob12", visitor: "blob13", ip: "blob14", lat: "blob15", lon: "blob16", sink: "blob17", sinkctx: "blob18" }
+
+// ---- sinkhole ------------------------------------------------------------------------------
+// Paths scanners probe for secrets, most probed first in spor's own data (October 2026). The tap
+// answers a match with bait (tap/sink.js) when the origin has nothing there. First match wins.
+export const BAIT = [
+  // /.env, /.env.local, /src/.env, /@fs/app/.env, /backup.env
+  { kind: "env", test: /(^|\/)\.env(\.[\w-]+)?$|\/[\w.-]+\.env$/i },
+  { kind: "git", test: /\/\.git\/(config|HEAD)$|\/\.git-credentials$/ },
+  { kind: "aws", test: /\/\.aws\/credentials$|\/\.boto$|\/\.s3cfg$/ },
+  { kind: "npm", test: /\/\.npmrc$/ },
+  { kind: "docker", test: /\/Dockerfile$|\/docker-compose\.ya?ml$/i },
+  { kind: "php", test: /\.php\d?$/i },
+  { kind: "userfiles", test: /^\/userfiles\/?$/i }
+]
+export const baitKind = (path) => BAIT.find((b) => b.test.test(String(path || "")))?.kind || ""
+export const BAIT_KINDS = BAIT.map((b) => b.kind)
+
+// Who never gets bait: AI assistants fetching for a person, AI search and search engines, unless
+// their operator says they don't follow robots.txt (ai.robots.txt, OpenAI's crawler docs).
+export const SINK_EXEMPT = ["ai-user", "ai-search", "search"]
+export const IGNORES_ROBOTS = ["Perplexity-User", "ChatGPT-User"]
+export function sinkable(row) {
+  if (!SINK_EXEMPT.includes(classOf(row))) return true
+  const u = lowerAscii(row.ua)
+  return IGNORES_ROBOTS.some((t) => u.includes(lowerAscii(t)))
+}
+const PROBE = /wp-|\.php|\.env|\/\.git|xmlrpc|\/admin|\/cgi-bin|\/vendor\/|\/\.well-known\/security|\/\.aws\/|\/\.boto|\/\.s3cfg|\/\.npmrc|\/Dockerfile|\/docker-compose|\/userfiles/i
 // a proxy target is /<hostname>; scanners' /wp.php or /.well-known only look like one
 const TARGET = /^\/[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/i
 
@@ -206,7 +232,7 @@ export function windowStart(days, now = Date.now()) {
 // Drill-down filters from the query string. Analytics Engine SQL has no bound parameters, so every
 // value that reaches it matches a pattern without quotes, backslashes or whitespace; anything
 // else is dropped, never escaped. SQLite gets the same values as bound parameters.
-export const FILTER_KEYS = ["day", "country", "asn", "class", "path", "ip"]
+export const FILTER_KEYS = ["view", "day", "country", "asn", "class", "path", "ip"]
 
 function v4hex(ip) {
   const parts = ip.split(".")
@@ -261,6 +287,8 @@ export function parseFilters(params, now = Date.now()) {
   if (/^[A-Z0-9]{2}$/.test(get("country"))) out.country = get("country")
   if (/^\d{1,10}$/.test(get("asn"))) out.asn = get("asn")
   if (CLASS_IDS.includes(get("class"))) out.class = get("class")
+  // the sinkhole view: only bait, canary uses and /_internal/ challenges
+  if (get("view") === "sink") out.view = "sink"
   // printable ASCII without ' and \ (the tap cuts paths at 64 characters)
   if (/^\/[\x21-\x26\x28-\x5b\x5d-\x7e]{0,63}$/.test(get("path"))) out.path = get("path")
   // an address ipToHex can read (it rejects malformed IPv6 such as 1::2::3), at most 45 characters
@@ -287,6 +315,7 @@ export function filterSql(filters, col, lit) {
   const parts = []
   for (const k of ["country", "asn", "path", "ip"]) if (filters[k]) parts.push(`${col[k]} = ${lit(filters[k])}`)
   if (filters.class) parts.push(classSql(filters.class, col))
+  if (filters.view === "sink") parts.push(`${col.sink} != ''`)
   return parts.map((p) => ` AND ${p}`).join("")
 }
 
@@ -303,8 +332,9 @@ export function queries(days, host, config, now = Date.now(), filters = {}) {
   const from = `FROM ${config.dataset} WHERE timestamp >= toDateTime('${w.from}') AND timestamp < toDateTime('${w.to}')` + hostSql(h, config, "index1", (v) => `'${v}'`) + filterSql(f, c, (v) => `'${v}'`)
   const n = "SUM(_sample_interval) AS n"
   const ok = "blob5 >= '200' AND blob5 < '300'"
-  // tables of people (cities, visitors) follow a class filter when there is one
-  const people = f.class ? "" : ` AND ${classSql("human", c)}`
+  // tables of people (cities, visitors) follow a class filter when there is one, and show everyone
+  // in the sinkhole view, which is mostly bots
+  const people = f.class || f.view === "sink" ? "" : ` AND ${classSql("human", c)}`
   const human = classSql("human", c)
   return {
     totals: `SELECT index1 AS host, blob5 AS status, ${n} ${from} GROUP BY host, status FORMAT JSON`,
@@ -317,6 +347,13 @@ export function queries(days, host, config, now = Date.now(), filters = {}) {
     agents: `SELECT index1 AS host, blob3 AS ua, blob6 AS bot, blob12 AS asorg, ${n} ${from} AND NOT ${human} GROUP BY host, ua, bot, asorg ORDER BY n DESC, host, ua, bot, asorg LIMIT ${LIMITS.agents} FORMAT JSON`,
     visitors: `SELECT index1 AS host, toStartOfInterval(timestamp, INTERVAL '1' DAY) AS day, count(DISTINCT blob13) AS v ${from} AND blob13 != ''${people} GROUP BY host, day FORMAT JSON`,
     ips: `SELECT index1 AS host, blob14 AS ip, blob12 AS asorg, blob4 AS country, ${n} ${from} AND blob14 != '' GROUP BY host, ip, asorg, country ORDER BY n DESC, host, ip, asorg, country LIMIT ${LIMITS.ips} FORMAT JSON`,
+    // the sinkhole view: bait served by kind, and every canary use with the probe it came from
+    ...(f.view === "sink"
+      ? {
+        sinkkinds: `SELECT blob17 AS kind, index1 AS host, ${n} ${from} GROUP BY kind, host ORDER BY n DESC, kind, host LIMIT 200 FORMAT JSON`,
+        sinkuse: `SELECT toStartOfInterval(timestamp, INTERVAL '1' HOUR) AS at, index1 AS host, blob1 AS path, blob17 AS kind, blob18 AS ctx, blob14 AS ip, blob12 AS asorg, blob4 AS country, ${n} ${from} AND blob17 LIKE 'use:%' GROUP BY at, host, path, kind, ctx, ip, asorg, country ORDER BY at DESC, host, path, kind, ctx, ip, asorg, country LIMIT ${LIMITS.canaries} FORMAT JSON`
+      }
+      : {}),
     // every host in the window, whatever the selection and filters: the service chips
     hosts: `SELECT index1 AS host, ${n} FROM ${config.dataset} WHERE timestamp >= toDateTime('${w.from}') AND timestamp < toDateTime('${w.to}') GROUP BY host ORDER BY n DESC, host LIMIT 200 FORMAT JSON`,
     // toDayOfWeek: 1 = Monday ... 7 = Sunday, UTC
@@ -365,7 +402,7 @@ export function agentName(row, id = classOf(row)) {
 
 // filtered: a class filter is on, so every detail row already belongs to the class asked for and
 // the page tables show its fetches, not only people's
-export function build({ totals = [], daily = [], ok = [], paths = [], origins = [], geo = [], networks = [], agents = [], visitors = [], ips = [], heat = [], hosts: seen = [] }, config, { hourly = false, filtered = false } = {}) {
+export function build({ totals = [], daily = [], ok = [], paths = [], origins = [], geo = [], networks = [], agents = [], visitors = [], ips = [], heat = [], hosts: seen = [], sinkkinds = [], sinkuse = [] }, config, { hourly = false, filtered = false } = {}) {
   const classify = classifier()
   const hosts = new Map()
   const get = (raw) => {
@@ -453,6 +490,13 @@ export function build({ totals = [], daily = [], ok = [], paths = [], origins = 
   // the detail query is capped: if it came back full, human counts are a lower bound
   model.partial = ok.length >= OK_LIMIT
   model.hourly = hourly
+  // the sinkhole view: bait by kind ("bait:env" -> n) and canary uses, newest first
+  model.sinkkinds = new Map()
+  for (const r of sinkkinds) model.sinkkinds.set(String(r.kind), (model.sinkkinds.get(String(r.kind)) || 0) + num(r.n))
+  model.canaries = sinkuse.map((r) => {
+    const [host, ip, at, kind] = String(r.ctx || "").split("|")
+    return { at: String(r.at).slice(0, 16), host: normalizeHost(r.host), path: r.path, kind: String(r.kind).replace(/^use:/, ""), ip: r.ip || "", asorg: r.asorg || "", country: r.country || "", n: num(r.n), from: host ? { host, ip, at, kind } : null }
+  })
   // every host in the window, for the service chips (a Map: normalized host -> requests)
   model.hosts = new Map()
   for (const r of seen) model.hosts.set(normalizeHost(r.host), (model.hosts.get(normalizeHost(r.host)) || 0) + num(r.n))
@@ -471,6 +515,7 @@ export function toJSON(model, config, { days, host, filters = {} } = {}) {
   const top = (map) => [...map.entries()].sort((a, b) => b[1] - a[1])
   return {
     days, host: host || null, filters, partial: Boolean(model.partial), heat: model.heat,
+    ...(filters.view === "sink" ? { sink: { bait: [...(model.sinkkinds || [])].sort((a, b) => b[1] - a[1]), canaries: model.canaries || [] } } : {}),
     hosts: model.map((h) => ({
       host: h.host, service: serviceOf(h.host, config), description: config.services[h.host] || config.services[serviceOf(h.host, config)] || null,
       requests: h.requests, ok2xx: h.ok2xx, pageviews: h.pageviews, bots: h.bots, visitors: h.visitors,
@@ -720,11 +765,28 @@ td.n{width:56px;text-align:right;font-variant-numeric:tabular-nums;padding-left:
 .cell a{color:inherit}.cell a:hover{color:var(--accent)}
 .spark a rect{cursor:pointer}
 .foot{font-size:12px;margin-top:24px}
+.alerts{margin-bottom:16px;table-layout:auto}.alerts th{text-align:left;font-size:12px;color:var(--muted);font-weight:600;padding:2px 8px 4px 0}.alerts td{padding:3px 8px 3px 0;vertical-align:top;overflow-wrap:anywhere}
 .map{display:block;width:100%;height:auto}.map path{fill:var(--soft);stroke:var(--line);stroke-width:.6}
 .map circle{fill:var(--accent);fill-opacity:.45;stroke:var(--accent);stroke-width:.6}.map a:hover circle{fill-opacity:.8}
 @media (max-width:520px){body{padding:16px 12px 32px}.tile .v{font-size:24px}.card{padding:12px}}`
 
-// credit: an attribution line the backend owes (the self-hosted server's DB-IP data is CC BY 4.0)
+// The sinkhole card: every canary use with the probe its key came from, and bait served by kind
+function sinkSection(model, state) {
+  const uses = model.canaries || []
+  // an IP links to its filter (in this view: everything sinkhole from it), when it is an address
+  const ipCell = (ip) => {
+    const href = filterLink(state, "ip", ip)
+    return href ? `<a href="${href}">${escapeHtml(ip)}</a>` : escapeHtml(ip || "?")
+  }
+  const rows = uses.map((u) => `<tr><td>${escapeHtml(u.at)}</td><td>${ipCell(u.ip)} <span class="muted">${escapeHtml([u.asorg, u.country].filter(Boolean).join(" · "))}</span></td><td>${escapeHtml(u.host + u.path)}</td><td>${u.from ? `${escapeHtml(u.from.kind)} bait on ${escapeHtml(u.from.host)}, to ${ipCell(u.from.ip)} at ${escapeHtml(u.from.at)}` : "unknown bait"}</td><td class="n">${u.n}</td></tr>`).join("")
+  const kinds = new Map([...(model.sinkkinds || [])].map(([k, n]) => [k, n]))
+  const label = (k) => (k.startsWith("bait:") ? `${k.slice(5)} bait served` : k.startsWith("use:") ? `${k.slice(4)} key used` : k === "challenge" ? "/_internal/ without a key" : k)
+  return `<section class="card"><header><h2>Sinkhole <span class="desc">Probes for secrets get bait with canary keys; a key in use points back at the probe that took it.</span></h2></header>
+${uses.length ? `<table class="alerts"><caption>canary alerts</caption><tr><th>hour (UTC)</th><th>used by</th><th>on</th><th>key from</th><th class="n">n</th></tr>${rows}</table>` : `<p class="muted">No canary key has been used in this window.</p>`}
+<div class="grid">${table("sinkhole events", kinds, { label })}</div>
+</section>`
+}
+
 // credit: an attribution line the backend owes (the self-hosted server's DB-IP data is CC BY 4.0)
 // land: the map's outline (LAND from src/world.js); without it there is no map
 export function render(model, { days, host, filters = {}, generated, config, cache = "cached up to 5 min", credit = "", land = "", today = new Date().toISOString().slice(0, 10) }) {
@@ -735,6 +797,8 @@ export function render(model, { days, host, filters = {}, generated, config, cac
     : windowDays(days, today)
   const c = combine(model, config, host)
   const dayLinks = [1, 7, 31].map((d) => d === days && !filters.day ? `<b aria-current="true">${d}d</b>` : `<a href="${hrefFor(state, { days: d, day: null })}">${d}d</a>`).join("")
+  const sink = filters.view === "sink"
+  const viewLinks = sink ? `<a href="${hrefFor(state, { view: null })}">traffic</a><b aria-current="true">sinkhole</b>` : `<b aria-current="true">traffic</b><a href="${hrefFor(state, { view: "sink" })}">sinkhole</a>`
   // every service seen in the window, busiest first; a chip adds its service to the selection or
   // takes it out, so one or several can be in view
   const selected = host ? host.split(",") : []
@@ -757,7 +821,7 @@ export function render(model, { days, host, filters = {}, generated, config, cac
   }
   const hostLinks = [host ? `<a href="${hrefFor(state, { host: null })}">all</a>` : `<b aria-current="true">all</b>`, ...[...seen].sort((a, b) => b[1] - a[1]).map(([name]) => chip(name))].join("")
   const named = { class: classLabel }
-  const active = FILTER_KEYS.filter((k) => filters[k]).map((k) => `<a href="${hrefFor(state, { [k]: null })}" title="remove this filter">${escapeHtml(k)}: ${escapeHtml(named[k] ? named[k](filters[k]) : filters[k])} ×</a>`).join("")
+  const active = FILTER_KEYS.filter((k) => filters[k] && k !== "view").map((k) => `<a href="${hrefFor(state, { [k]: null })}" title="remove this filter">${escapeHtml(k)}: ${escapeHtml(named[k] ? named[k](filters[k]) : filters[k])} ×</a>`).join("")
   const ai = [...c.classes].filter(([id]) => id.startsWith("ai-")).reduce((t, [, n]) => t + n, 0)
   const share = c.ok2xx ? Math.round((c.bots / c.ok2xx) * 100) : 0
   const span = filters.day ? escapeHtml(filters.day) : `last ${days} day${days === 1 ? "" : "s"}`
@@ -780,10 +844,11 @@ ${CSS}
 </style></head><body>
 <div class="top"><h1>${escapeHtml(config.title)}</h1>
 <p class="muted">${c.requests} requests · ${span}${host ? ` · ${escapeHtml(host.split(",").join(", "))}` : ""} · generated ${escapeHtml(generated)}${cache ? ` · ${escapeHtml(cache)}` : ""}</p></div>
-<nav class="bar" aria-label="filters"><div class="seg" aria-label="days">${dayLinks}</div><div class="chips" aria-label="services">${hostLinks}</div>${active ? `<div class="chips on" aria-label="active filters">${active}</div>` : ""}</nav>
+<nav class="bar" aria-label="filters"><div class="seg" aria-label="days">${dayLinks}</div><div class="seg" aria-label="view">${viewLinks}</div><div class="chips" aria-label="services">${hostLinks}</div>${active ? `<div class="chips on" aria-label="active filters">${active}</div>` : ""}</nav>
 ${model.partial ? `<p class="note">Breakdowns are partial: the detail query hit its ${OK_LIMIT}-group cap, so human counts are a lower bound.</p>` : ""}
+${sink ? sinkSection(model, state) : ""}
 ${model.length ? `${tiles}
-${worldMap(c.places, land, state) ? `<div class="card"><p class="cap">${filters.class && filters.class !== "human" ? escapeHtml(classLabel(filters.class)) : "Visitors"} by city</p>${worldMap(c.places, land, state)}</div>` : ""}
+${worldMap(c.places, land, state) ? `<div class="card"><p class="cap">${sink ? "Sinkhole traffic" : filters.class && filters.class !== "human" ? escapeHtml(classLabel(filters.class)) : "Visitors"} by city</p>${worldMap(c.places, land, state)}</div>` : ""}
 ${heatmap(model.heat || []) ? `<div class="card"><p class="cap">Requests by weekday and hour (UTC)</p>${heatmap(model.heat || [])}</div>` : ""}
 ${combinedSection(c, window, config, model.partial, state)}` : `<p class="empty muted">No data in this window.</p>`}
 ${credit ? `<p class="muted foot">${credit}</p>` : ""}

@@ -29,6 +29,12 @@ language.
   the Cloudflare proxy, such as nginx on a VPS, a Pi on your tailnet or Azure.
   With wildcard routes it counts every proxied host in a zone, Worker sites
   included. Workers sites can also write their own data point (see `snippets/`).
+- **A sinkhole for secret hunters.** With `SINKHOLE` on, the tap answers probes
+  for `/.env`, `/.git/config`, `*.php`, cloud and npm credentials and the like
+  with bait, but only where the origin has nothing. The bait holds canary keys
+  that point back at your own hosts; a key in use is recorded with the probe
+  it came from and can ping a webhook. AI assistants and search crawlers are
+  left alone, except those that ignore robots.txt. `?view=sink` shows it all.
 - **Agent-led setup.** [AGENTS.md](AGENTS.md) is written so that an agent can
   stand up an instance end to end.
 - **Or self-hosted.** `spor serve` runs the same dashboard and API from one Node

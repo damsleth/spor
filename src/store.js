@@ -12,7 +12,7 @@ import { OK_LIMIT, LIMITS, clampDays, validHost, hostSql, parseFilters, span, fi
 
 export const HOUR = 3600
 // the Analytics Engine blobs in order (AE_COLUMNS in src/report.js), host first
-export const FIELDS = ["host", "path", "referer", "ua", "country", "status", "bot", "origin", "method", "city", "region", "asn", "asorg", "visitor", "ip", "lat", "lon"]
+export const FIELDS = ["host", "path", "referer", "ua", "country", "status", "bot", "origin", "method", "city", "region", "asn", "asorg", "visitor", "ip", "lat", "lon", "sink", "sinkctx"]
 // the store's column for each filter and class field: the same names
 const COLS = Object.fromEntries(FIELDS.map((f) => [f, f]))
 const createHits = (name) => `CREATE TABLE IF NOT EXISTS ${name} (
@@ -88,7 +88,9 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
         deleteAE.run(from, to)
         for (const r of rows) {
           const since = cutover(r.host)
-          if (since !== null && r.hour >= since) continue
+          // a local host's sinkhole rows stay: the tap answered those requests, so nginx never saw
+          // a canary use (bait it did see, as the origin's 404)
+          if (since !== null && r.hour >= since && !r.sink) continue
           if (r.hour < from || r.hour >= to) continue
           insert(r.hour, r, "ae", Number(r.n) || 0)
         }
@@ -112,7 +114,7 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
       })}`
       const n = "SUM(n) AS n"
       const ok = "status >= '200' AND status < '300'"
-      const people = f.class ? "" : ` AND ${classSql("human", COLS)}`
+      const people = f.class || f.view === "sink" ? "" : ` AND ${classSql("human", COLS)}`
       const human = classSql("human", COLS)
       const bucket = w.hourly ? "'%Y-%m-%d %H:00:00'" : "'%Y-%m-%d'"
       const all = (sql) => db.prepare(sql).all(...values)
@@ -127,6 +129,12 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
         agents: all(`SELECT host, ua, bot, asorg, ${n} ${where} AND NOT ${human} GROUP BY host, ua, bot, asorg ORDER BY n DESC, host, ua, bot, asorg LIMIT ${LIMITS.agents}`),
         visitors: all(`SELECT host, strftime('%Y-%m-%d', hour, 'unixepoch') AS day, count(DISTINCT visitor) AS v ${where} AND visitor != ''${people} GROUP BY host, day`),
         ips: all(`SELECT host, ip, asorg, country, ${n} ${where} AND ip != '' GROUP BY host, ip, asorg, country ORDER BY n DESC, host, ip, asorg, country LIMIT ${LIMITS.ips}`),
+        ...(f.view === "sink"
+          ? {
+            sinkkinds: all(`SELECT sink AS kind, host, ${n} ${where} GROUP BY kind, host ORDER BY n DESC, kind, host LIMIT 200`),
+            sinkuse: all(`SELECT strftime('%Y-%m-%d %H:00:00', hour, 'unixepoch') AS at, host, path, sink AS kind, sinkctx AS ctx, ip, asorg, country, ${n} ${where} AND sink LIKE 'use:%' GROUP BY at, host, path, kind, ctx, ip, asorg, country ORDER BY at DESC, host, path, kind, ctx, ip, asorg, country LIMIT ${LIMITS.canaries}`)
+          }
+          : {}),
         hosts: db.prepare(`SELECT host, ${n} FROM hits WHERE hour >= ? AND hour < ? GROUP BY host ORDER BY n DESC, host LIMIT 200`).all(w.fromSeconds, w.toSeconds),
         // AE's toDayOfWeek numbering: 1 = Monday ... 7 = Sunday (SQLite's %w is 0 = Sunday)
         heat: all(`SELECT ((CAST(strftime('%w', hour, 'unixepoch') AS INTEGER) + 6) % 7) + 1 AS dow, CAST(strftime('%H', hour, 'unixepoch') AS INTEGER) AS hr, ${n} ${where} GROUP BY dow, hr`)

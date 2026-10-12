@@ -17,6 +17,10 @@
   // RECORD_IP: true stores client IPs (and makes the visitor hash unsalted). Without it, bind a
   // KV namespace as SALTS for daily unique visitors with an expiring salt:
   // "kv_namespaces": [{ "binding": "SALTS", "id": "<npx wrangler kv namespace create spor-salts>" }]
-  "vars": { "SELF_COUNTED": [], "RECORD_IP": false },
+  // SINKHOLE: true answers probes for secrets (/.env, /.git/config, *.php...) with bait holding canary
+  // keys, when the origin has nothing at that path; see tap/sink.js. Set the CANARY_SECRET secret
+  // (any long random string) so a used key says which probe took it, and optionally CANARY_WEBHOOK
+  // (an ntfy topic URL, say) and CANARY_WEBHOOK_TOKEN to be told when one is used.
+  "vars": { "SELF_COUNTED": [], "RECORD_IP": false, "SINKHOLE": false },
   "analytics_engine_datasets": [{ "binding": "SPOR_ANALYTICS", "dataset": "spor_analytics" }]
 }
