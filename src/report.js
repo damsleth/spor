@@ -752,16 +752,19 @@ export const MAP_SCRIPT = `(function () {
       }
       stop()
     })
-    window.addEventListener("pointercancel", stop)
+    // only the dragging pointer's own cancel or capture loss ends it (a second finger lifting
+    // releases its own capture); a blur ends any drag
+    function stopFor(e) { if (drag && e.pointerId === drag.id) stop() }
+    window.addEventListener("pointercancel", stopFor)
     window.addEventListener("blur", stop)
-    svg.addEventListener("lostpointercapture", stop)
+    svg.addEventListener("lostpointercapture", stopFor)
     svg.addEventListener("click", function (e) {
       if (swallow && e.detail > 0) { e.preventDefault(); e.stopPropagation() }
       swallow = false
     }, true)
   })
 })()`
-export const MAP_SCRIPT_HASH = "sha256-kqmex5DlHR1Vsy9xTpRbOy3dirW8Dl41TYUPXNEMtjI="
+export const MAP_SCRIPT_HASH = "sha256-W37V0N2mdG27dJBKZCQ845OBY28vbmnKPSsfnWpaagM="
 
 // Visitors by city on a world map: land is the outline from src/world.js (passed in, so this file
 // stays import-free), one circle per place, its area proportional to its count. Same projection as
@@ -833,12 +836,13 @@ function heatmap(heat) {
   return `<svg class="heat" viewBox="0 0 264 82" role="img" aria-label="requests by weekday and hour, UTC, busiest ${max}">${labels}${cells}${hours}${hits}</svg>`
 }
 
+// eight distinct colors per class, as many as the donut shows slices: a code never shares one
 const STATUS_COLORS = {
-  c2: ["#2e9e63", "#8fd19e", "#1f6b45"],
-  c3: ["#3b6fe0", "#9a6be0", "#4fb3e8", "#7f8fd8"],
-  c4: ["#e0821a", "#f2c230", "#b7462a", "#f3a08e", "#8c5a2b", "#d6a26b"],
-  c5: ["#d23b3b", "#e5579e", "#8f1d2c"],
-  co: ["#8a919d", "#b9bec8", "#5f6670"]
+  c2: ["#2e9e63", "#8fd19e", "#1f6b45", "#5bbf8a", "#b8e3c4", "#3f8f6f", "#72a85a", "#0f4f33"],
+  c3: ["#3b6fe0", "#9a6be0", "#4fb3e8", "#7f8fd8", "#2a4fa8", "#c3a6f0", "#1f8ab8", "#5a3fa8"],
+  c4: ["#e0821a", "#f2c230", "#b7462a", "#f3a08e", "#8c5a2b", "#d6a26b", "#e85d1f", "#f6e08a"],
+  c5: ["#d23b3b", "#e5579e", "#8f1d2c", "#f08a8a", "#b02d6e", "#ff5c5c", "#6b1220", "#f2a7c8"],
+  co: ["#8a919d", "#b9bec8", "#5f6670", "#a4abb6", "#757c87", "#cdd1d8", "#4a5059", "#969ea9"]
 }
 // Status codes as a donut: a slice per code (the top 8, the rest as "other"), colored by class
 // (2xx green, 3xx blue, 4xx orange, 5xx red), lighter for the less common codes of a class. The
