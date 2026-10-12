@@ -147,7 +147,8 @@ ON CONFLICT DO UPDATE SET n = n + excluded.n`)
         geo: all(`SELECT host, country, region, city, lat, lon, ${n} ${where} AND ${ok} AND city != ''${people} GROUP BY host, country, region, city, lat, lon ORDER BY n DESC, host, country, region, city, lat, lon LIMIT ${LIMITS.geo}`),
         places: db.prepare(`SELECT host, country, region, city, lat, lon, ${selSql} AS sel, ${n} ${wherePlaces} AND ${ok} AND city != '' AND lat != ''${rest.class || rest.view === "sink" ? "" : ` AND ${human}`} GROUP BY host, country, region, city, lat, lon, sel ORDER BY sel DESC, n DESC, host, country, region, city, lat, lon LIMIT ${LIMITS.geo}`).all(...placeValues),
         networks: all(`SELECT host, asn, asorg, ${n} ${where} AND asn != '' GROUP BY host, asn, asorg ORDER BY n DESC, host, asn, asorg LIMIT ${LIMITS.networks}`),
-        agents: all(`SELECT host, ua, bot, asorg, ${n} ${where} AND NOT ${human} GROUP BY host, ua, bot, asorg ORDER BY n DESC, host, ua, bot, asorg LIMIT ${LIMITS.agents}`),
+        // the class reads only ua, bot and asorg: tested once per group, not per row (most of the time)
+        agents: all(`SELECT host, ua, bot, asorg, ${n} ${where} GROUP BY host, ua, bot, asorg HAVING NOT ${human} ORDER BY n DESC, host, ua, bot, asorg LIMIT ${LIMITS.agents}`),
         visitors: all(`SELECT host, strftime('%Y-%m-%d', hour, 'unixepoch') AS day, count(DISTINCT visitor) AS v ${where} AND visitor != ''${people} GROUP BY host, day`),
         visitorsHours: all(`SELECT host, strftime('%Y-%m-%d %H:00:00', (hour / ${bucket}) * ${bucket}, 'unixepoch') AS day, count(DISTINCT visitor) AS v ${where} AND visitor != ''${people} GROUP BY host, day`),
         ips: all(`SELECT host, ip, asorg, country, ${n} ${where} AND ip != '' GROUP BY host, ip, asorg, country ORDER BY n DESC, host, ip, asorg, country LIMIT ${LIMITS.ips}`),
