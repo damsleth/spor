@@ -246,10 +246,14 @@ export function hostSql(host, config, col, lit) {
   return parts.length ? ` AND (${parts.join(" OR ")})` : ""
 }
 
-// The window is whole UTC calendar days ending today, the same days the charts show
+// The window rolls: the last days × 24 hours, ending with the chart bucket (step hours, see
+// stepHours) that holds now, so 1d at 09:20 runs from 10:00 yesterday through 09:59 today
+export function windowEnd(days, now = Date.now()) {
+  const step = stepHours(days) * 3600000
+  return Math.floor(now / step) * step + step
+}
 export function windowStart(days, now = Date.now()) {
-  const today = Date.parse(new Date(now).toISOString().slice(0, 10) + "T00:00:00Z")
-  return new Date(today - (clampDays(String(days)) - 1) * 86400000).toISOString().slice(0, 19).replace("T", " ")
+  return new Date(windowEnd(days, now) - clampDays(String(days)) * 86400000).toISOString().slice(0, 19).replace("T", " ")
 }
 
 // ---- filters ----------------------------------------------------------------------------
@@ -342,8 +346,9 @@ export function parseFilters(params, now = Date.now()) {
   return out
 }
 
-// The window: whole UTC days ending today, or the one day a day filter names. step is the hours
-// per point of the requests chart: 1 up to a week, 6 beyond (124 points for 31 days)
+// The window: the rolling days (windowStart), a custom range of whole UTC days, or the one day a day
+// filter names. step is the hours per point of the requests chart: 1 up to a week, 6 beyond (124
+// points for 31 days)
 // how many days the window spans: a day filter one, a custom range its days, else days
 export const spanDays = (days, filters = {}) => (filters.day ? 1 : filters.from && filters.to ? Math.round((Date.parse(filters.to) - Date.parse(filters.from)) / 86400000) + 1 : clampDays(String(days)))
 // hours per point of the time charts: 1 up to a week, 6 up to a month, 24 beyond
@@ -363,7 +368,7 @@ export function span(days, filters = {}, now = Date.now()) {
     return { from: sql(from), to: sql(to), fromSeconds: from / 1000, toSeconds: to / 1000, hourly: filters.from === filters.to, step: stepHours(days, filters) }
   }
   const from = Date.parse(windowStart(days, now).replace(" ", "T") + "Z")
-  const to = Date.parse(new Date(now).toISOString().slice(0, 10) + "T00:00:00Z") + 86400000
+  const to = windowEnd(days, now)
   return { from: sql(from), to: sql(to), fromSeconds: from / 1000, toSeconds: to / 1000, hourly: clampDays(String(days)) === 1, step: stepHours(days, filters) }
 }
 
@@ -665,9 +670,9 @@ function filterLink(state, key, value) {
   return f[key] === value || (key === "ip" && f.ip === String(value).toLowerCase()) ? hrefFor(state, { [key]: value }) : null
 }
 
-function windowDays(days, today) {
-  const end = Date.parse(`${today}T00:00:00Z`)
-  return Array.from({ length: days }, (_, i) => new Date(end - (days - 1 - i) * 86400000).toISOString().slice(0, 10))
+// the window's chart buckets, "YYYY-MM-DD HH" every step hours
+function windowKeys(w) {
+  return Array.from({ length: (w.toSeconds - w.fromSeconds) / (w.step * 3600) }, (_, i) => new Date((w.fromSeconds + i * w.step * 3600) * 1000).toISOString().slice(0, 13).replace("T", " "))
 }
 
 // ---- charts --------------------------------------------------------------------------------
@@ -720,8 +725,8 @@ function lineChart(series, window, noun, dayLink = null) {
     const v = (max * t) / 4
     return `<line class="g" x1="${L}" x2="${CW - R}" y1="${fx(y(v))}" y2="${fx(y(v))}"/><text class="ax" x="${L - 6}" y="${fx(y(v) + 4)}" text-anchor="end">${short(v)}</text>`
   }).join("")
-  // x labels: dates at midnight when the keys span several days, else every few hours or days
-  const days = new Set(window.map((k) => k.slice(0, 10))).size
+  // x labels: dates at midnight when the keys span more than a day, else every few hours or days
+  const days = window[0].length > 10 && window.length <= 24 ? 1 : new Set(window.map((k) => k.slice(0, 10))).size
   const marks = window.length > 1 && window[0].length > 10 && days > 1
     ? window.map((k, i) => [k, i]).filter(([k]) => k.endsWith(" 00")).filter((_, j, a) => j % Math.ceil(a.length / 7) === 0)
     : window.map((k, i) => [k, i]).filter(([, i]) => i % Math.max(1, Math.ceil(window.length / 7)) === 0)
@@ -993,7 +998,7 @@ function combine(model, config, host = null) {
 }
 
 // One card for everything in view: the selected services, or all of them
-function combinedSection(c, window, dayWindow, config, capped, state) {
+function combinedSection(c, window, step, config, capped, state) {
   const share = c.ok2xx ? Math.round((c.bots / c.ok2xx) * 100) : 0
   const by = (key) => ({ link: (k) => filterLink(state, key, k) })
   const tab = (k) => k.indexOf("\t")
@@ -1011,8 +1016,8 @@ function combinedSection(c, window, dayWindow, config, capped, state) {
   return `<section class="card">
 ${only ? `<header><h2>${escapeHtml(unitLabel(only))}${desc ? ` <span class="desc">${escapeHtml(desc)}</span>` : ""}</h2></header>` : ""}
 <p class="summary"><b>${fmt(c.requests)}</b> requests · <b>${fmt(c.pageviews)}</b> human page views${c.visitors ? ` · <b>${fmt(c.visitors)}</b> unique visitors` : ""} · ${shareText(share, capped)} of 2xx from bots${capped ? " (upper bound)" : ""}</p>
-${chartRow("Requests", c.requests, lineChart(c.daily, window, "requests", state.day ? null : (day) => hrefFor(state, { day })), window.length === dayWindow.length * 24 ? "per hour" : `per ${(dayWindow.length * 24) / window.length} hours`)}
-${chartRow("Unique visitors", c.visitors, lineChart(c.visitorsHourly, window, "visitors", state.day ? null : (day) => hrefFor(state, { day })), window.length === dayWindow.length * 24 ? "per hour" : `per ${(dayWindow.length * 24) / window.length} hours`)}
+${chartRow("Requests", c.requests, lineChart(c.daily, window, "requests", state.day ? null : (day) => hrefFor(state, { day })), step === 1 ? "per hour" : `per ${step} hours`)}
+${chartRow("Unique visitors", c.visitors, lineChart(c.visitorsHourly, window, "visitors", state.day ? null : (day) => hrefFor(state, { day })), step === 1 ? "per hour" : `per ${step} hours`)}
 ${statusPie(c.status)}
 <div class="grid">
 ${c.multi ? table("services", services, { label: (k) => config.services[k] ? `${k} · ${config.services[k]}` : unitLabel(k), link: (k) => hrefFor(state, { host: k }) }) : ""}${named ? table("host names", c.hostnames, { link: (k) => hrefFor(state, { host: exact(k) }) }) : ""}${table("pages", c.pages, scoped)}${table("referers", c.referers)}${table("countries", c.countries, { link: (k) => filterLink({ ...state, city: null }, "country", k) })}${table("cities", c.cities)}${table("browsers", c.browsers)}${table("networks", c.networks, { label: (asn) => `AS${asn} ${c.names.get(`as:${asn}`) || ""}`.trim(), ...by("asn") })}${table("bots and AI", c.classes, { label: classLabel, ...by("class") })}${table("agents", c.agents, { label: (k) => k.slice(tab(k) + 1), link: (k) => filterLink(state, "class", k.slice(0, tab(k))) })}${table("IP addresses", c.ips, { label: (ip) => `${ip} ${c.names.get(`ip:${ip}`) || ""}`.trim(), ...by("ip") })}${table("404s and probes", c.probes, scoped)}${table("proxy targets", c.targets)}${table("proxy callers (Origin)", c.origins)}
@@ -1173,16 +1178,10 @@ function calendar(state, today) {
 
 // credit: an attribution line the backend owes (the self-hosted server's DB-IP data is CC BY 4.0)
 // land: the map's outline (LAND from src/world.js); without it there is no map
-export function render(model, { days, host, filters = {}, generated, config, cache = "cached up to 5 min", credit = "", land = "", today = new Date().toISOString().slice(0, 10) }) {
+export function render(model, { days, host, filters = {}, generated, config, cache = "cached up to 5 min", credit = "", land = "", now = Date.now(), today = new Date(now).toISOString().slice(0, 10) }) {
   const state = { days, host, ...filters }
-  // the window's days, and its hour buckets ("YYYY-MM-DD HH", every step hours) for requests
-  const dayWindow = filters.day
-    ? [filters.day]
-    : filters.from && filters.to
-      ? Array.from({ length: spanDays(days, filters) }, (_, i) => addDays(filters.from, i))
-      : windowDays(days, today)
-  const step = stepHours(days, filters)
-  const window = dayWindow.flatMap((d) => Array.from({ length: 24 / step }, (_, i) => `${d} ${String(i * step).padStart(2, "0")}`))
+  // the window's buckets ("YYYY-MM-DD HH", every step hours) for the time charts
+  const window = windowKeys(span(days, filters, now))
   const c = combine(model, config, host)
   // 1d, 7d, 31d drop any custom range; custom opens the calendar (showing the range when there is one)
   const custom = Boolean(filters.from && filters.to)
@@ -1236,14 +1235,14 @@ export function render(model, { days, host, filters = {}, generated, config, cac
   const active = FILTER_KEYS.filter((k) => filters[k] && k !== "view" && !RANGE_KEYS.includes(k)).map((k) => `<a href="${hrefFor(state, { [k]: null })}" title="remove this filter">${escapeHtml(k)}: ${escapeHtml(named[k] ? named[k](filters[k]) : filters[k])} ×</a>`).join("")
   const ai = [...c.classes].filter(([id]) => id.startsWith("ai-")).reduce((t, [, n]) => t + n, 0)
   const share = c.ok2xx ? Math.round((c.bots / c.ok2xx) * 100) : 0
-  const span = filters.day ? escapeHtml(filters.day) : custom ? `${escapeHtml(filters.from)} – ${escapeHtml(filters.to)}` : `last ${days} day${days === 1 ? "" : "s"}`
+  const spanText = filters.day ? escapeHtml(filters.day) : custom ? `${escapeHtml(filters.from)} – ${escapeHtml(filters.to)}` : days === 1 ? "last 24 hours" : `last ${days} days`
   const people = [...c.services.values()].filter((s) => s.pageviews).length
   const map = worldMap(c.places, land, state)
   const heat = heatmap(model.heat || [])
   const picked = filters.city ? `${filters.city}, ${filters.country}` : filters.country || ""
   const mapCard = map ? `<div class="card"><p class="cap">${sink ? "Sinkhole traffic" : filters.class && filters.class !== "human" ? escapeHtml(classLabel(filters.class)) : "Visitors"} by city${picked ? ` · ${escapeHtml(picked)} · <a href="${hrefFor(state, { country: null, city: null })}">whole world</a>` : ""} <span class="hint">· scroll to zoom, drag to move</span></p>${map}</div>` : ""
   const tiles = `<div class="tiles">
-<div class="tile"><div class="l">Requests</div><div class="v">${fmt(c.requests)}</div><div class="s">${span}</div></div>
+<div class="tile"><div class="l">Requests</div><div class="v">${fmt(c.requests)}</div><div class="s">${spanText}</div></div>
 ${filters.class && filters.class !== "human"
     ? `<div class="tile"><div class="l">Page views</div><div class="v">${fmt(c.pageviews)}</div><div class="s">by ${escapeHtml(classLabel(filters.class))}</div></div>`
     : `<div class="tile"><div class="l">Human page views</div><div class="v">${fmt(c.pageviews)}</div><div class="s">bots and assets excluded</div></div>`}
@@ -1259,7 +1258,7 @@ ${filters.class && filters.class !== "human"
 ${CSS}
 </style></head><body>
 <div class="top"><h1>${escapeHtml(config.title)}</h1>
-<p class="muted">${c.requests} requests · ${span}${host ? ` · ${escapeHtml(host.split(",").join(", "))}` : ""} · generated ${escapeHtml(generated)}${cache ? ` · ${escapeHtml(cache)}` : ""}</p></div>
+<p class="muted">${c.requests} requests · ${spanText}${host ? ` · ${escapeHtml(host.split(",").join(", "))}` : ""} · generated ${escapeHtml(generated)}${cache ? ` · ${escapeHtml(cache)}` : ""}</p></div>
 <nav class="bar" aria-label="filters"><div class="seg" aria-label="days">${dayLinks}</div><div class="seg" aria-label="view">${viewLinks}</div><div class="chips" aria-label="services">${hostLinks}</div>${active ? `<div class="chips on" aria-label="active filters">${active}</div>` : ""}</nav>
 ${filters.pick ? calendar(state, today) : ""}
 ${model.partial ? `<p class="note">Breakdowns are partial: the detail query hit its ${OK_LIMIT}-group cap, so human counts are a lower bound.</p>` : ""}
@@ -1267,7 +1266,7 @@ ${sink ? sinkSection(model, state) : ""}
 ${model.length ? `${tiles}
 ${mapCard}
 ${heat ? `<div class="card"><p class="cap">Requests by weekday and hour (UTC)</p>${heat}</div>` : ""}
-${combinedSection(c, window, dayWindow, config, model.partial, state)}` : `<p class="empty muted">No data in this window.</p>`}
+${combinedSection(c, window, stepHours(days, filters), config, model.partial, state)}` : `<p class="empty muted">No data in this window.</p>`}
 ${credit ? `<p class="muted foot">${credit}</p>` : ""}
 ${map ? `<script>${MAP_SCRIPT}</script>` : ""}
 </body></html>`

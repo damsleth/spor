@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { loadConfig, requireConfig, windowStart, toJSON, clampDays, validHost, queries, build, render, escapeHtml, checkAuth, safeEqual, DEFAULT_DAYS, MAX_DAYS, OK_LIMIT } from "../src/report.js"
+import { loadConfig, requireConfig, windowStart, windowEnd, toJSON, clampDays, validHost, queries, build, render, escapeHtml, checkAuth, safeEqual, DEFAULT_DAYS, MAX_DAYS, OK_LIMIT } from "../src/report.js"
 import { config, raw } from "./fixture-config.js"
 
 const chrome = "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/140.0 Safari/537.36"
@@ -148,7 +148,7 @@ test("the requests series has one point per hour in the window, zero-filled, and
       { day: "2026-10-03 13:00:00", host: "blog.example.com", n: 2 }
     ]
   }, config)
-  const html = render(model, { days: 3, host: null, config, generated: "x", today: "2026-10-03" })
+  const html = render(model, { days: 3, host: null, config, generated: "x", now: Date.parse("2026-10-03T23:30:00Z") })
   const card = html.slice(html.indexOf('<section'))
   const chart = card.slice(card.indexOf('<svg class="line"'), card.indexOf("</svg>", card.indexOf('<svg class="line"')))
   const points = [...chart.matchAll(/<g class="pt" aria-label="([^"]+)"/g)].map((m) => m[1])
@@ -212,7 +212,7 @@ test("hostile hosts in data, descriptions, titles and referers cannot inject mar
     daily: [{ day: "2026-10-03 00:00:00", host: evil, n: 5 }, { day: "2026-10-03 00:00:00", host: "a.example.com", n: 3 }],
     ok: [{ host: evil, path: evil, referer: evil, ua: chrome, country: evil, method: "VIEW", n: 1 }]
   }, cfg)
-  const html = render(model, { days: 3, host: evil, config: cfg, generated: evil, today: "2026-10-03" })
+  const html = render(model, { days: 3, host: evil, config: cfg, generated: evil, now: Date.parse("2026-10-03T23:30:00Z") })
   assert.doesNotMatch(html, /<script/)
   assert.doesNotMatch(html, /<svg onload/)
   assert.doesNotMatch(html, /"><script/)
@@ -231,15 +231,21 @@ test("config types are validated, and the Worker-side requireConfig refuses a mi
   assert.deepEqual(requireConfig(raw).hosts, config.hosts)
 })
 
-test("the SQL window is whole UTC calendar days, the same days the charts show", () => {
-  const noon = Date.parse("2026-10-04T12:00:00Z")
-  assert.equal(windowStart(1, noon), "2026-10-04 00:00:00")
-  assert.equal(windowStart(7, noon), "2026-09-28 00:00:00")
-  assert.equal(windowStart(31, Date.parse("2026-03-01T00:30:00Z")), "2026-01-30 00:00:00")
-  for (const sql of Object.values(queries(7, null, config, noon))) {
-    assert.match(sql, /timestamp >= toDateTime\('2026-09-28 00:00:00'\)/)
+test("the SQL window rolls: the last days × 24 hours, through the chart bucket that holds now", () => {
+  const morning = Date.parse("2026-10-04T09:20:00Z")
+  assert.equal(windowStart(1, morning), "2026-10-03 10:00:00", "1d is the last 24 hours, not today since midnight")
+  assert.equal(windowEnd(1, morning), Date.parse("2026-10-04T10:00:00Z"))
+  assert.equal(windowStart(7, morning), "2026-09-27 10:00:00")
+  // beyond a week the buckets are 6 hours, aligned to 00, 06, 12 and 18 UTC
+  assert.equal(windowStart(31, Date.parse("2026-03-01T00:30:00Z")), "2026-01-29 06:00:00")
+  for (const sql of Object.values(queries(7, null, config, morning))) {
+    assert.match(sql, /timestamp >= toDateTime\('2026-09-27 10:00:00'\) AND timestamp < toDateTime\('2026-10-04 10:00:00'\)/)
     assert.doesNotMatch(sql, /NOW\(\) - INTERVAL/)
   }
+  const daily = [{ day: "2026-10-03 10:00:00", host: "blog.example.com", n: 1 }, { day: "2026-10-04 09:00:00", host: "blog.example.com", n: 2 }]
+  const html = render(build({ totals: [{ host: "blog.example.com", status: "200", n: 3 }], daily }, config), { days: 1, host: null, config, generated: "x", now: morning })
+  assert.match(html, /requests, 2026-10-03 10 to 2026-10-04 09/, "the chart runs over the same 24 hours")
+  assert.match(html, /last 24 hours/)
 })
 
 test("when the detail query is capped, the bot share is shown as an upper bound", () => {

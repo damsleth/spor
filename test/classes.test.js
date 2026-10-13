@@ -132,7 +132,7 @@ test("render: every drill-down is a link that keeps the other filters, and activ
   const s = seeded()
   const filters = { country: "NO" }
   const model = build(s.rows(7, "blog.example.com", config, STORE_NOW, filters), config)
-  const html = render(model, { days: 7, host: "blog.example.com", filters, config, generated: "x", today: "2026-10-06" })
+  const html = render(model, { days: 7, host: "blog.example.com", filters, config, generated: "x", now: Date.parse("2026-10-06T23:30:00Z") })
   assert.match(html, /href="\?days=7&amp;host=blog\.example\.com&amp;country=NO&amp;path=%2Fabout"/)
   assert.match(html, /href="\?days=7&amp;host=blog\.example\.com&amp;country=NO&amp;asn=2119"/)
   assert.match(html, /href="\?days=7&amp;host=blog\.example\.com"[^>]*>country: NO ×/)
@@ -353,7 +353,7 @@ test("every chart label is escaped, and heatmap cells carry their hover label", 
 test("every line chart hit area stays inside the plot, edge to edge without gaps", () => {
   for (const days of [1, 3, 7, 31]) {
     const daily = Array.from({ length: days }, (_, i) => ({ day: `2026-10-${String(12 - days + 1 + i).padStart(2, "0")} 00:00:00`, host: "blog.example.com", n: i + 1 }))
-    const html = render(build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }], daily }, config, { hourly: days === 1 }), { days, host: null, config, generated: "x", today: "2026-10-12" })
+    const html = render(build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }], daily }, config, { hourly: days === 1 }), { days, host: null, config, generated: "x", now: Date.parse("2026-10-12T23:30:00Z") })
     const chart = html.slice(html.indexOf('<svg class="line"'), html.indexOf("</svg>", html.indexOf('<svg class="line"')))
     const hits = [...chart.matchAll(/<rect class="hit" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"/g)].map((m) => [Number(m[1]), Number(m[1]) + Number(m[2])])
     assert.equal(hits.length, days <= 7 ? days * 24 : days * 4, `${days} days`)
@@ -436,7 +436,7 @@ test("the visitors chart counts distinct visitors per hour, and the total stays 
   assert.equal(json.visitors, 2)
   assert.deepEqual(json.visitorsHourly, [["2026-10-06 11", 1], ["2026-10-06 12", 2]])
   assert.match(queries(31, null, config, now).visitorsHours, /INTERVAL '6' HOUR/)
-  const html = render(build(r, config), { days: 1, host: null, config, generated: "x", today: "2026-10-06" })
+  const html = render(build(r, config), { days: 1, host: null, config, generated: "x", now: Date.parse("2026-10-06T23:30:00Z") })
   assert.match(html, /aria-label="Tue 10-06 12:00 UTC: 2 visitors"/)
 })
 
@@ -455,11 +455,11 @@ test("a domain selection covers the domain and every name under it, in both back
   s.replaceAE(h - HOUR, h + HOUR, [row("example.com", 1), row("blog.example.com", 2), row("notexample.com", 4), row("other.net", 8)])
   const model = build(s.rows(1, "*.example.com", config, now), config)
   assert.deepEqual(model.map((x) => [x.host, x.requests]).sort(), [["blog.example.com", 2], ["example.com", 1]])
-  const html = render(model, { days: 1, host: "*.example.com", config, generated: "x", today: "2026-10-06" })
+  const html = render(model, { days: 1, host: "*.example.com", config, generated: "x", now: Date.parse("2026-10-06T23:30:00Z") })
   assert.match(html, /<caption>services<\/caption>/, "a domain selection still breaks down by service")
   assert.match(html, /class="sel" href="\?days=1"[^>]*>example\.com ×/, "the domain chip shows it is selected")
   assert.doesNotMatch(html, />\* ×</, "the selection doesn't add a chip of its own")
-  const quiet = render(build({ totals: [{ host: "other.net", status: "200", n: 1 }] }, config), { days: 1, host: "*.example.com", config, generated: "x", today: "2026-10-06" })
+  const quiet = render(build({ totals: [{ host: "other.net", status: "200", n: 1 }] }, config), { days: 1, host: "*.example.com", config, generated: "x", now: Date.parse("2026-10-06T23:30:00Z") })
   assert.match(quiet, /class="sel" href="\?days=1"[^>]*>example\.com ×/, "a selected domain without traffic keeps its chip, to drop it")
 })
 
@@ -514,6 +514,6 @@ test("the self-hosted store matches domains case-sensitively, like AE's LIKE", (
 })
 
 test("a domain with only its apex still gets a domain chip, which differs from the apex with aliases", () => {
-  const html = render(build({ totals: [{ host: "example.com", status: "200", n: 1 }] }, config), { days: 1, config, generated: "x", today: "2026-10-06" })
+  const html = render(build({ totals: [{ host: "example.com", status: "200", n: 1 }] }, config), { days: 1, config, generated: "x", now: Date.parse("2026-10-06T23:30:00Z") })
   assert.match(html, /<span class="dom"><a href="\?days=1&amp;host=\*\.example\.com">example\.com<\/a><a href="\?days=1&amp;host=example\.com"[^>]*>@<\/a><\/span>/)
 })
