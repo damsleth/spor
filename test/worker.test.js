@@ -143,3 +143,12 @@ test("a falsy non-object vars.SPOR (false, 0) also fails closed", async () => {
   for (const SPOR of [false, 0]) assert.equal((await get("/", auth, { ...env, SPOR })).status, 503, String(SPOR))
   assert.equal(calls.length, 0)
 })
+
+test("?scale= sets the spor_scale cookie and the cookie keeps it", async () => {
+  const set = await get("/?days=7&scale=linear")
+  assert.match(set.headers.get("set-cookie"), /^spor_scale=linear; Path=\/; Max-Age=\d+; SameSite=Lax; HttpOnly$/)
+  assert.equal((await get("/?days=7")).headers.get("set-cookie"), null)
+  const kept = await (await get("/?days=7", { ...auth, cookie: "a=b; spor_scale=linear" })).text()
+  assert.match(kept, /<b aria-current="true">linear<\/b>/)
+  assert.match(await (await get("/?days=7", { ...auth, cookie: "spor_scale=nonsense" })).text(), /<b aria-current="true">log<\/b>/)
+})

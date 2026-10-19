@@ -280,3 +280,13 @@ test("render: the cache note is optional (the self-hosted backend has none)", ()
   assert.match(render([], opts), /cached up to 5 min/)
   assert.doesNotMatch(render([], { ...opts, cache: null }), /cached/)
 })
+
+test("the time charts are log by default, with a gridline per decade; linear has quarter steps", () => {
+  const daily = [5, 0, 25000].map((n, i) => ({ day: `2026-10-12 0${i}:00:00`, host: "blog.example.com", n }))
+  const model = build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }], daily }, config, { hourly: true })
+  const opts = { days: 1, host: null, config, generated: "x", now: Date.parse("2026-10-12T23:30:00Z") }
+  const labels = (html) => [...html.matchAll(/text-anchor="end">([^<]+)</g)].map((m) => m[1])
+  assert.deepEqual(labels(render(model, opts)), ["0", "10", "100", "1k", "10k", "100k"])
+  assert.deepEqual(labels(render(model, { ...opts, scale: "linear" })), ["0", "6.3k", "12.5k", "18.8k", "25k"])
+  assert.match(render(model, opts), /<b aria-current="true">log<\/b><a href="[^"]*&amp;scale=linear">linear<\/a>/)
+})

@@ -42,13 +42,18 @@ export async function handle(request, { ready, password, open = false, spor, row
   const host = validHost(url.searchParams.get("host"), config)
   // drill-down filters; invalid values are dropped (see parseFilters)
   const filters = parseFilters(url.searchParams)
+  // the charts' scale: ?scale= sets it and the spor_scale cookie keeps it; log unless it says linear
+  const asked = url.searchParams.get("scale")
+  const kept = /(?:^|;\s*)spor_scale=(\w+)/.exec(request.headers.get("cookie") || "")?.[1]
+  const scale = (asked || kept) === "linear" ? "linear" : "log"
   try {
     const model = build(await rows(days, host, config, filters), config, { hourly: span(days, filters).hourly, filtered: Boolean(filters.class) })
     if (url.pathname === "/api/report") {
       return new Response(JSON.stringify(toJSON(model, config, { days, host, filters })), { headers: { ...HEADERS, "Content-Type": "application/json; charset=utf-8" } })
     }
-    const html = render(model, { days, host, filters, config, cache, credit, land: LAND, generated: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC" })
-    return new Response(html, { headers: { ...HEADERS, "Content-Type": "text/html; charset=utf-8" } })
+    const html = render(model, { days, host, filters, scale, config, cache, credit, land: LAND, generated: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC" })
+    const cookie = asked ? { "Set-Cookie": `spor_scale=${scale}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly` } : {}
+    return new Response(html, { headers: { ...HEADERS, "Content-Type": "text/html; charset=utf-8", ...cookie } })
   } catch (error) {
     console.log(String(error))
     return text(502, `could not read ${source}`)
