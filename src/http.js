@@ -6,8 +6,9 @@ import { LAND } from "./world.js"
 
 export const HEADERS = {
   "Cache-Control": "no-store",
-  // no script but the map's, allowed by its hash (src/report.js MAP_SCRIPT)
-  "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src '${MAP_SCRIPT_HASH}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+  // no inline script but the map's, allowed by its hash (src/report.js MAP_SCRIPT). 'self' scripts and
+  // styles, connect-src 'self' and https/data images let a reverse proxy add a shared header bar.
+  "Content-Security-Policy": `default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' '${MAP_SCRIPT_HASH}'; connect-src 'self'; img-src https: data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
   "X-Robots-Tag": "noindex"

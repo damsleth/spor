@@ -415,7 +415,9 @@ test("the map's script is the only one, allowed by its hash, and only on a page 
   const { createHash } = await import("node:crypto")
   const { LAND } = await import("../src/world.js")
   assert.equal(MAP_SCRIPT_HASH, `sha256-${createHash("sha256").update(MAP_SCRIPT).digest("base64")}`, "MAP_SCRIPT and MAP_SCRIPT_HASH change together")
-  assert.match(HEADERS["Content-Security-Policy"], new RegExp(`default-src 'none'; style-src 'unsafe-inline'; script-src '${MAP_SCRIPT_HASH.replace(/[+/=]/g, "\\$&")}';`))
+  // 'self' admits a same-origin script file (a proxy's shared header bar); inline script stays hash-only
+  assert.match(HEADERS["Content-Security-Policy"], new RegExp(`default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' '${MAP_SCRIPT_HASH.replace(/[+/=]/g, "\\$&")}';`))
+  assert.doesNotMatch(HEADERS["Content-Security-Policy"].match(/script-src [^;]*/)[0], /unsafe-inline/)
   assert.doesNotMatch(MAP_SCRIPT, /innerHTML|outerHTML|insertAdjacent|eval\(|Function\(|textContent|fetch\(|location/, "it touches no text and no network")
   const geo = [{ host: "blog.example.com", country: "NO", region: "", city: "Oslo", lat: "59.91", lon: "10.74", n: 1 }]
   const withMap = render(build({ totals: [{ host: "blog.example.com", status: "200", n: 1 }], geo }, config), { days: 7, host: null, config, generated: "x", land: LAND })
