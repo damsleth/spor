@@ -1028,7 +1028,7 @@ ${c.multi ? table("services", services, { label: (k) => config.services[k] ? `${
 const CSS = `:root{color-scheme:light dark;--bg:#f6f7f9;--card:#fff;--fg:#14171f;--muted:#5d6572;--line:#e6e8ec;--soft:#f0f2f5;--accent:#2f62d9;--accent-soft:rgba(47,98,217,.12);--c2:#2a8f5b;--c3:#2f62d9;--c4:#c27a10;--c5:#cc3b3b;--co:#8a919d;--sel:#e8710a;--range:#34495e;--range-fg:#aeb8c4;--range-end:#e74c3c}
 @media (prefers-color-scheme:dark){:root{--bg:#0d0f14;--card:#161a22;--fg:#e9ecf2;--muted:#9aa3b2;--line:#262b36;--soft:#1d222c;--accent:#7aa2ff;--accent-soft:rgba(122,162,255,.16);--c2:#4fc08a;--c3:#7aa2ff;--c4:#e0a43c;--c5:#f0716f;--co:#8a919d;--sel:#f5a04a;--range:#34495e;--range-fg:#c8d0da;--range-end:#e74c3c}}
 *{box-sizing:border-box}
-body{margin:0 auto;max-width:1120px;padding:24px 16px 48px;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
+body{margin:0;padding:24px 24px 48px;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
 a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 h1{font-size:22px;font-weight:650;letter-spacing:-.01em;margin:0}
 .muted{color:var(--muted)}.top p{margin:4px 0 0;font-size:13px}
